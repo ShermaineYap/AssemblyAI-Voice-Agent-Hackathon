@@ -6,9 +6,12 @@ import { SAMPLES } from './samples.js'
 import { fallbackReport } from './report.js'
 import { extractPdf, pickSections } from './pdftext.js'
 import { loadHistory, saveSession, makeEntry, compareToPrevious, sparkline } from './history.js'
+import { createAura } from './aura.js'
 
 // Seconds of one answer before the examiner cuts in. ?ramble=30 lowers it for a demo.
 const RAMBLE_SECONDS = Math.max(10, Number(new URLSearchParams(location.search).get('ramble')) || 90)
+// Warn in the last sixth of the allowance (15 s of 90).
+const RAMBLE_WARN = Math.round(RAMBLE_SECONDS * 5 / 6)
 
 const $ = (id) => document.getElementById(id)
 const form = $('setup-form')
@@ -73,9 +76,28 @@ function syncForm() {
   form.elements.subject.placeholder = v.mode === 'interview' ? 'e.g. Junior Data Analyst' : 'e.g. Crop disease detection with YOLOv8'
   $('start-btn').textContent = v.mode === 'interview' ? 'Start the interview' : 'Start the viva'
   $('char-count').textContent = v.context.length
-  const terms = extractKeyterms(v.subject, v.context)
-  $('keyterm-preview').textContent = terms.length ? terms.slice(0, 12).join(', ') + (terms.length > 12 ? ` +${terms.length - 12}` : '') : 'none yet'
+  renderKeyterms(v.context.trim().length >= 40 || v.subject ? extractKeyterms(v.subject, v.context) : [])
+  const persona = form.elements.persona.selectedOptions[0]?.textContent.split(' ')[0] || ''
+  const voice = form.elements.voice.selectedOptions[0]?.textContent.split(' ')[0] || ''
+  $('settings-summary').innerHTML = ''
+  for (const t of [persona, `${v.questions} questions`, voice, v.thinkingTime ? 'thinking time' : 'fast turns']) {
+    const i = document.createElement('i'); i.textContent = t; $('settings-summary').append(i)
+  }
   try { localStorage.setItem(STORE_KEY, JSON.stringify(v)) } catch {}
+}
+
+let shownTerms = ''
+function renderKeyterms(terms) {
+  const key = terms.slice(0, 14).join('|')
+  if (key === shownTerms) return
+  shownTerms = key
+  const box = $('keyterm-preview')
+  box.replaceChildren()
+  if (!terms.length) { const n = document.createElement('span'); n.className = 'none'; n.textContent = 'Terms from your report appear here.'; box.append(n); return }
+  terms.slice(0, 14).forEach((t, i) => {
+    const c = document.createElement('span'); c.className = 'kt'; c.textContent = t; c.style.animationDelay = `${i * 25}ms`; box.append(c)
+  })
+  if (terms.length > 14) { const m = document.createElement('span'); m.className = 'kt more'; m.textContent = `+${terms.length - 14} more`; box.append(m) }
 }
 
 form.addEventListener('input', syncForm)
@@ -201,8 +223,8 @@ async function start(config) {
       onChunk: (pcm) => {
         if (ws?.readyState === 1 && ws.ready) ws.send(JSON.stringify({ type: 'input.audio', audio: toBase64(pcm) }))
       },
-      onMicLevel: (l) => (micLevel = l),
-      onSpeakerLevel: (l) => (speakerLevel = l),
+      onMicLevel: (l) => { micLevel = l; aura.setLevels(speakerLevel, micLevel) },
+      onSpeakerLevel: (l) => { speakerLevel = l; aura.setLevels(speakerLevel, micLevel) },
       onPlaying: (playing) => {
         agentPlaying = playing
         if (!playing) metrics.agentFinished()
@@ -241,6 +263,7 @@ function handle(msg) {
       startedAt = Date.now()
       timer = setInterval(tick, 1000)
       tick()
+      buildStepper()
       setStatus('listening')
       break
     case 'input.speech.started':
@@ -265,6 +288,8 @@ function handle(msg) {
     case 'reply.started':
       setStatus('speaking')
       stopRambleClock()
+      newReply = true
+      repliedSinceYou = true
       break
     case 'reply.audio':
       audio?.play(fromBase64(msg.data))
@@ -303,11 +328,14 @@ function startRambleClock() {
   rambleWarned = false
   rambleTimer = setInterval(() => {
     const secs = Math.floor((Date.now() - answerClockStart) / 1000)
-    if (secs >= RAMBLE_SECONDS - 15 && !rambleWarned) {
+    const ring = $('answer-ring')
+    ring.style.strokeDashoffset = String(603.2 * (1 - Math.min(1, (secs + 1) / RAMBLE_SECONDS)))
+    ring.classList.toggle('late', secs >= RAMBLE_WARN)
+    if (secs >= RAMBLE_WARN && !rambleWarned) {
       $('ramble-secs').textContent = String(secs)
       $('ramble').hidden = false
     }
-    if (secs >= RAMBLE_SECONDS - 15) $('ramble-secs').textContent = String(secs)
+    if (secs >= RAMBLE_WARN) $('ramble-secs').textContent = String(secs)
     if (secs >= RAMBLE_SECONDS && !rambleWarned) {
       rambleWarned = true
       if (ws?.readyState === 1 && ws.ready) {
@@ -325,6 +353,8 @@ function stopRambleClock() {
   rambleTimer = null
   answerClockStart = 0
   $('ramble').hidden = true
+  const ring = $('answer-ring')
+  if (ring) { ring.style.strokeDashoffset = '603.2'; ring.classList.remove('late') }
   answerStartIdx = transcript.length
 }
 
@@ -438,15 +468,31 @@ function resetLive() {
 // ---------------------------------------------------------------- live UI
 function setView(v) {
   document.body.dataset.view = v
+  if (v !== 'live') document.body.dataset.state = 'idle'
   window.scrollTo({ top: 0 })
 }
 
 function setStatus(state, text) {
   const el = $('status')
   el.className = 'live-only status ' + state
+  document.body.dataset.state = state
+  aura.setState(state)
   const labels = { listening: 'your turn', speaking: 'examiner speaking', thinking: 'examiner thinking', connecting: 'connecting' }
   $('status-text').textContent = text || labels[state] || state
   $('orb-label').textContent = text || labels[state] || state
+}
+
+// Question progress dots in the top bar.
+function buildStepper(current = 0) {
+  const n = Number(cfg?.questions) || 4
+  const ol = $('stepper')
+  ol.replaceChildren()
+  for (let i = 1; i <= n; i++) {
+    const li = document.createElement('li')
+    li.className = i < current ? 'done' : i === current ? 'now' : ''
+    li.title = `Question ${i}`
+    ol.append(li)
+  }
 }
 
 function tick() {
@@ -461,7 +507,9 @@ function showQuestion({ number, topic, question, follow_up }) {
   $('q-topic').textContent = topic || ''
   $('q-topic').classList.toggle('fu', Boolean(follow_up))
   $('q-text').textContent = question || ''
-  card.animate([{ opacity: 0.4, transform: 'translateY(4px)' }, { opacity: 1, transform: 'none' }], { duration: 300, easing: 'ease-out' })
+  card.animate([{ opacity: 0.3, transform: 'translateY(6px) scale(.99)' }, { opacity: 1, transform: 'none' }], { duration: 450, easing: 'cubic-bezier(.2,.8,.2,1)' })
+  if (!cfg.focus) buildStepper(Number(number) || 0)
+  else buildStepper(Math.min(Number(number) || 0, Number(cfg.questions) || 4))
   questionsAsked.push({ number, topic, question, follow_up: Boolean(follow_up), at: transcript.length })
 }
 
@@ -544,7 +592,22 @@ function highlightFillers(el, text) {
   el.append(text.slice(last))
 }
 
+// Captions under the orb: the examiner's current words large, yours below.
+let newReply = false
+function caption(who, text, final) {
+  if (who === 'examiner') {
+    if (newReply) { $('cap-you').textContent = ''; newReply = false }
+    $('cap-examiner').textContent = text
+  } else {
+    const el = $('cap-you')
+    el.replaceChildren()
+    if (final) highlightFillers(el, text)
+    else el.textContent = text
+  }
+}
+
 function partial(who, text) {
+  caption(who, who === 'you' ? liveAnswer(text) : text, false)
   const box = $('transcript')
   if (partials[who]) {
     partials[who].text = text
@@ -572,50 +635,73 @@ function addLine(who, text) {
     box.append(lineEl(who, text))
   }
   box.scrollTop = box.scrollHeight
+  if (who === 'you') repliedSinceYou = false
+  const last = transcript.at(-1)
+  if (!/^\(cutting in/.test(text)) caption(who, last?.who === who ? last.text : text, true)
 }
 
-// ---------------------------------------------------------------- orb
-const orb = $('orb')
-const g = orb.getContext('2d')
-let phase = 0
-let smoothMic = 0
-let smoothSpk = 0
-function drawOrb() {
-  requestAnimationFrame(drawOrb)
-  if (document.body.dataset.view !== 'live') return
-  const css = getComputedStyle(document.documentElement)
-  const accent = css.getPropertyValue('--accent').trim() || '#4f3bd6'
-  const good = css.getPropertyValue('--good').trim() || '#1f7a45'
-  smoothMic += (Math.min(1, micLevel * 6) - smoothMic) * 0.2
-  smoothSpk += (Math.min(1, speakerLevel * 5) - smoothSpk) * 0.2
-  phase += 0.02
-  const W = orb.width, H = orb.height, cx = W / 2, cy = H / 2
-  g.clearRect(0, 0, W, H)
-  const base = 78 + smoothSpk * 26
-  for (let k = 3; k >= 0; k--) {
-    g.beginPath()
-    for (let a = 0; a <= Math.PI * 2 + 0.01; a += Math.PI / 60) {
-      const wob = Math.sin(a * 3 + phase * (1 + k * 0.3)) * (4 + smoothSpk * 14) + Math.cos(a * 5 - phase) * (2 + smoothSpk * 6)
-      const r = base + k * 10 + wob
-      const x = cx + Math.cos(a) * r, y = cy + Math.sin(a) * r
-      a === 0 ? g.moveTo(x, y) : g.lineTo(x, y)
-    }
-    g.globalAlpha = k === 0 ? 0.95 : 0.12
-    g.fillStyle = accent
-    g.fill()
-  }
-  // Mic ring: shows the candidate is being heard.
-  g.globalAlpha = 0.25 + smoothMic * 0.75
-  g.strokeStyle = good
-  g.lineWidth = 3 + smoothMic * 6
-  g.beginPath()
-  g.arc(cx, cy, 136, 0, Math.PI * 2)
-  g.stroke()
-  g.globalAlpha = 1
+// While a candidate answer is split by pauses, show the whole answer so far.
+function liveAnswer(partialText) {
+  const last = transcript.at(-1)
+  return last?.who === 'you' && !newReplySinceLast() ? `${last.text} ${partialText}` : partialText
 }
-drawOrb()
+let repliedSinceYou = true
+function newReplySinceLast() { return repliedSinceYou }
+
+// ---------------------------------------------------------------- aura
+const aura = createAura($('orb'))
+// The landing page gets its own aura, breathing gently on its own.
+const heroAura = createAura($('hero-aura'))
+heroAura.setState('idle')
+;(function breathe(t) {
+  requestAnimationFrame(breathe)
+  if (document.body.dataset.view !== 'setup') return
+  const k = (t || 0) / 1000
+  heroAura.setLevels(0.05 + 0.04 * Math.sin(k * 1.3) + 0.03 * Math.sin(k * 3.1), 0)
+})()
 
 // ---------------------------------------------------------------- report
+// Score counts up from 0, like a result reveal.
+function countUp(el, to) {
+  const t0 = performance.now(), dur = 1400
+  const step = (t) => {
+    const k = Math.min(1, (t - t0) / dur)
+    el.textContent = String(Math.round(to * (1 - Math.pow(1 - k, 3))))
+    if (k < 1) requestAnimationFrame(step)
+  }
+  if (matchMedia('(prefers-reduced-motion: reduce)').matches) el.textContent = String(to)
+  else requestAnimationFrame(step)
+}
+
+// Radar chart of the rubric, one axis per criterion, scale 0-5.
+function drawRadar(svg, stats) {
+  const NS = 'http://www.w3.org/2000/svg'
+  const cx = 160, cy = 150, R = 100, n = stats.length
+  const pt = (i, v) => {
+    const a = -Math.PI / 2 + (i / n) * Math.PI * 2
+    return [cx + Math.cos(a) * R * v, cy + Math.sin(a) * R * v]
+  }
+  const el = (tag, attrs) => { const e = document.createElementNS(NS, tag); for (const k in attrs) e.setAttribute(k, attrs[k]); return e }
+  svg.replaceChildren()
+  for (const lvl of [0.2, 0.4, 0.6, 0.8, 1]) {
+    svg.append(el('polygon', { class: 'grid', points: stats.map((_, i) => pt(i, lvl).join(',')).join(' ') }))
+  }
+  stats.forEach((c, i) => {
+    const [x, y] = pt(i, 1)
+    svg.append(el('line', { class: 'axis', x1: cx, y1: cy, x2: x, y2: y }))
+    const [lx, ly] = pt(i, 1.16)
+    const t = el('text', { x: lx, y: ly + (ly < cy - 10 ? -2 : ly > cy + 10 ? 12 : 4), 'text-anchor': Math.abs(lx - cx) < 8 ? 'middle' : lx > cx ? 'start' : 'end' })
+    t.textContent = c.name.split(' ')[0].replace(/[^A-Za-z]/g, '')
+    svg.append(t)
+  })
+  const vals = stats.map((c) => (c.avg == null ? 0 : c.avg / 5))
+  svg.append(el('polygon', { class: 'shape', points: vals.map((v, i) => pt(i, Math.max(v, 0.02)).join(',')).join(' ') }))
+  stats.forEach((c, i) => {
+    const [x, y] = pt(i, vals[i])
+    svg.append(el('circle', { class: c.avg == null ? 'pt na' : 'pt', cx: x, cy: y, r: 4.5 }))
+  })
+}
+
 function fill(id, items, empty = 'Nothing noted.') {
   const el = $(id)
   el.replaceChildren()
@@ -631,8 +717,11 @@ function renderReport() {
   const stats = criterionStats()
   const r = report || fallbackReport(stats, cfg.mode)
   const overall = Math.max(0, Math.min(100, Math.round(Number(r.overall) || 0)))
-  $('overall').textContent = overall
-  requestAnimationFrame(() => ($('ring-fg').style.strokeDashoffset = String(326.7 * (1 - overall / 100))))
+  countUp($('overall'), overall)
+  $('ring-fg').style.strokeDashoffset = '326.7'
+  setTimeout(() => ($('ring-fg').style.strokeDashoffset = String(326.7 * (1 - overall / 100))), 60)
+  const grid = document.querySelector('.report-grid')
+  grid.classList.remove('reveal'); void grid.offsetWidth; grid.classList.add('reveal')
   $('r-kind').textContent = `${MODES[cfg.mode].label} report`
   $('r-verdict').textContent = r.verdict || 'Report'
   const mins = startedAt ? Math.max(1, Math.round((Date.now() - startedAt) / 60000)) : 0
@@ -651,6 +740,7 @@ function renderReport() {
     tr.lastChild.textContent = c.avg == null ? 'not assessed' : `${c.avg.toFixed(1)} / 5`
     tb.append(tr)
   }
+  drawRadar($('radar'), stats)
 
   const m = metrics.summary()
   const rows = [
