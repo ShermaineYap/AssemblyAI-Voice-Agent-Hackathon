@@ -3,140 +3,161 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="theme-color" content="#0b0a10">
 <title>VivaVoice · practice your viva out loud</title>
 <meta name="description" content="Drop in your report PDF and a voice examiner grills you on it, scores every answer live, cuts in when you ramble, and hands you a report with a model answer. Built on the AssemblyAI Voice Agent API.">
 <link rel="icon" href="/favicon.svg" type="image/svg+xml">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="/styles.css">
 </head>
-<body data-view="setup">
+<body data-view="setup" data-state="idle">
+
+<div class="backdrop" aria-hidden="true"><i class="b1"></i><i class="b2"></i><i class="grain"></i></div>
 
 <header class="topbar">
   <a class="brand" href="/" aria-label="VivaVoice home">
-    <svg width="26" height="26" viewBox="0 0 32 32" aria-hidden="true"><circle cx="16" cy="16" r="15" fill="var(--accent)"/><path d="M9 11l7 12 7-12" fill="none" stroke="var(--on-accent)" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/></svg>
+    <svg width="28" height="28" viewBox="0 0 32 32" aria-hidden="true"><defs><linearGradient id="lg" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#a99cff"/><stop offset="1" stop-color="#5b3df5"/></linearGradient></defs><circle cx="16" cy="16" r="15" fill="url(#lg)"/><path d="M9.5 11l6.5 11 6.5-11" fill="none" stroke="#fff" stroke-width="2.8" stroke-linecap="round" stroke-linejoin="round"/></svg>
     <span>VivaVoice</span>
   </a>
+  <ol class="live-only stepper" id="stepper" aria-label="Question progress"></ol>
   <div class="live-only status" id="status"><span class="dot"></span><span id="status-text">connecting</span></div>
-  <div class="live-only meter mono"><span id="elapsed">0:00</span></div>
-  <button class="live-only btn danger" id="end-btn">End session</button>
+  <div class="live-only meter mono" aria-label="Elapsed time"><span id="elapsed">0:00</span></div>
+  <button class="live-only btn end" id="end-btn">End session</button>
 </header>
 
 <!-- ============ SETUP ============ -->
 <main id="view-setup" class="view setup">
   <section class="hero">
-    <p class="eyebrow">Voice agent · AssemblyAI</p>
-    <h1>Rehearse your viva <em>out loud</em>, with an examiner who read your report.</h1>
-    <p class="lede">Drop in your report PDF, or paste an abstract or a job description. VivaVoice questions you on it by voice, follows up on what you actually said, scores each answer against a rubric while you talk, and gives you a written report at the end.</p>
+    <div class="hero-copy">
+      <p class="eyebrow"><span class="pulse"></span>Voice agent · built on AssemblyAI</p>
+      <h1>Rehearse your viva <em>out loud</em>, with an examiner who has read your report.</h1>
+      <p class="lede">It questions you on your own work, follows up on what you actually said, scores every answer while you talk, and shows you what a 5 / 5 answer sounds like.</p>
+      <ol class="path" aria-label="How it works">
+        <li><b>1</b><span>Upload</span><small>your report PDF</small></li>
+        <li><b>2</b><span>Talk</span><small>to a live examiner</small></li>
+        <li><b>3</b><span>Improve</span><small>with a scored report</small></li>
+      </ol>
+    </div>
+    <div class="hero-orb" aria-hidden="true">
+      <canvas id="hero-aura"></canvas>
+      <div class="float q1"><span class="eyebrow">Examiner</span>Your field mAP is 0.87 but PlantVillage is 0.95. What explains the gap?</div>
+      <div class="float q2"><span class="eyebrow good">Evaluation · 4 / 5</span>Named the domain shift. Quantify the gain next time.</div>
+    </div>
   </section>
 
   <form id="setup-form" class="card form" autocomplete="off">
-    <div class="seg" role="radiogroup" aria-label="Session type">
-      <label><input type="radio" name="mode" value="viva" checked><span>Project viva</span></label>
-      <label><input type="radio" name="mode" value="interview"><span>Job interview</span></label>
-    </div>
-
-    <div class="row two">
-      <label class="field"><span>Your name</span><input name="name" maxlength="60" placeholder="e.g. Aisyah"></label>
-      <label class="field"><span id="subject-label">Project title</span><input name="subject" maxlength="160" required placeholder="e.g. Crop disease detection with YOLOv8"></label>
+    <div class="form-head">
+      <div class="seg" role="radiogroup" aria-label="Session type">
+        <label><input type="radio" name="mode" value="viva" checked><span>Project viva</span></label>
+        <label><input type="radio" name="mode" value="interview"><span>Job interview</span></label>
+      </div>
+      <button type="button" class="btn link" id="sample-btn">✦ Try a sample</button>
     </div>
 
     <div class="drop" id="drop" tabindex="0" role="button" aria-label="Upload your report as a PDF">
       <input type="file" id="pdf-input" accept="application/pdf" hidden>
-      <div class="drop-inner">
-        <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6"/><path d="M12 18v-6"/><path d="m9 15 3-3 3 3"/></svg>
-        <div><b id="drop-title">Drop your report PDF here</b><br><small id="drop-sub">or click to choose. The abstract, methods, results and conclusion are pulled out in your browser; the file never leaves your computer.</small></div>
-      </div>
+      <div class="drop-icon"><svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6"/><path d="M12 18v-6"/><path d="m9 15 3-3 3 3"/></svg></div>
+      <div class="drop-text"><b id="drop-title">Drop your report PDF here</b><small id="drop-sub">or click to choose. The abstract, methods, results and conclusion are pulled out in your browser; the file never leaves your computer.</small></div>
+    </div>
+
+    <div class="row two">
+      <label class="field"><span id="subject-label">Project title</span><input name="subject" maxlength="160" required placeholder="e.g. Crop disease detection with YOLOv8"></label>
+      <label class="field"><span>Your name <small>optional</small></span><input name="name" maxlength="60" placeholder="e.g. Aisyah"></label>
     </div>
 
     <label class="field"><span id="context-label">Abstract, summary or key sections of your report</span>
-      <textarea name="context" rows="7" maxlength="6000" required placeholder="The more specific this is, the sharper the questions."></textarea>
-      <small class="hint"><span id="char-count">0</span>/6000 · technical terms found here are sent to AssemblyAI as <b>keyterms</b> so your jargon is transcribed correctly: <span id="keyterm-preview" class="mono"></span></small>
+      <textarea name="context" rows="6" maxlength="6000" required placeholder="The more specific this is, the sharper the questions."></textarea>
     </label>
+    <div class="keyterms"><span class="kt-label">Sent to AssemblyAI as <b>keyterms</b> <span class="muted">· <span id="char-count">0</span>/6000</span></span><span id="keyterm-preview" class="kt-list"></span></div>
 
-    <div class="row three">
-      <label class="field"><span>Examiner</span>
-        <select name="persona"><option value="supportive">Supportive but rigorous</option><option value="strict">Strict external examiner</option></select>
-      </label>
-      <label class="field"><span>Main questions</span>
-        <select name="questions"><option>3</option><option selected>4</option><option>5</option><option>6</option></select>
-      </label>
-      <label class="field"><span>Examiner voice</span>
-        <select name="voice">
-          <option value="anna">Anna · British</option>
-          <option value="charles">Charles · British</option>
-          <option value="jane">Jane · American</option>
-          <option value="michael">Michael · American</option>
-        </select>
-      </label>
-    </div>
+    <details class="settings">
+      <summary><span>Examiner settings</span><span class="summary-chips" id="settings-summary"></span></summary>
+      <div class="settings-grid">
+        <label class="field"><span>Examiner</span>
+          <select name="persona"><option value="supportive">Supportive but rigorous</option><option value="strict">Strict external examiner</option></select>
+        </label>
+        <label class="field"><span>Main questions</span>
+          <select name="questions"><option>3</option><option selected>4</option><option>5</option><option>6</option></select>
+        </label>
+        <label class="field"><span>Voice</span>
+          <select name="voice">
+            <option value="anna">Anna · British</option>
+            <option value="charles">Charles · British</option>
+            <option value="jane">Jane · American</option>
+            <option value="michael">Michael · American</option>
+          </select>
+        </label>
+        <label class="field"><span>Microphone</span><select id="mic"><option value="">Default microphone</option></select></label>
+        <label class="check"><input type="checkbox" name="thinkingTime" checked><span><b>Thinking time</b><small>A pause mid-answer won't end your turn.</small></span></label>
+      </div>
+    </details>
 
-    <div class="row two align-end">
-      <label class="check"><input type="checkbox" name="thinkingTime" checked><span><b>Give me thinking time</b><br><small>Longer silence thresholds, so a pause mid-answer doesn't end your turn.</small></span></label>
-      <label class="field"><span>Microphone</span><select id="mic"><option value="">Default microphone</option></select></label>
-    </div>
-
-    <div class="actions">
-      <button type="button" class="btn ghost" id="sample-btn">Fill with a sample</button>
-      <button type="submit" class="btn primary" id="start-btn">Start the viva</button>
-    </div>
     <p class="error" id="setup-error" role="alert" hidden></p>
-    <p class="fineprint">Use headphones for the best experience. Audio goes to AssemblyAI for the live session only; nothing is stored by VivaVoice.</p>
+    <div class="actions">
+      <p class="fineprint">🎧 Headphones recommended. Audio goes to AssemblyAI for the live session only.</p>
+      <button type="submit" class="btn primary big" id="start-btn">Start the viva</button>
+    </div>
   </form>
 
   <section class="card progress" id="progress" hidden>
     <div class="card-head"><span class="eyebrow">Your progress</span><span class="mono muted" id="progress-count"></span></div>
     <div class="progress-grid">
-      <div><small>Overall score</small><svg class="spark" viewBox="0 0 160 40" preserveAspectRatio="none" aria-hidden="true"><polyline id="spark-score" fill="none" stroke="var(--accent)" stroke-width="2.5" stroke-linejoin="round"/></svg><b id="spark-score-last">–</b></div>
-      <div><small>Fillers / 100 words</small><svg class="spark" viewBox="0 0 160 40" preserveAspectRatio="none" aria-hidden="true"><polyline id="spark-fill" fill="none" stroke="var(--warn)" stroke-width="2.5" stroke-linejoin="round"/></svg><b id="spark-fill-last">–</b></div>
-      <div><small>Thinking time (s)</small><svg class="spark" viewBox="0 0 160 40" preserveAspectRatio="none" aria-hidden="true"><polyline id="spark-think" fill="none" stroke="var(--good)" stroke-width="2.5" stroke-linejoin="round"/></svg><b id="spark-think-last">–</b></div>
+      <div><small>Overall score</small><svg class="spark" viewBox="0 0 160 40" preserveAspectRatio="none" aria-hidden="true"><polyline id="spark-score" fill="none" stroke="var(--accent)" stroke-width="2.5" stroke-linejoin="round" stroke-linecap="round"/></svg><b id="spark-score-last">–</b></div>
+      <div><small>Fillers / 100 words</small><svg class="spark" viewBox="0 0 160 40" preserveAspectRatio="none" aria-hidden="true"><polyline id="spark-fill" fill="none" stroke="var(--warn)" stroke-width="2.5" stroke-linejoin="round" stroke-linecap="round"/></svg><b id="spark-fill-last">–</b></div>
+      <div><small>Thinking time (s)</small><svg class="spark" viewBox="0 0 160 40" preserveAspectRatio="none" aria-hidden="true"><polyline id="spark-think" fill="none" stroke="var(--good)" stroke-width="2.5" stroke-linejoin="round" stroke-linecap="round"/></svg><b id="spark-think-last">–</b></div>
     </div>
     <p class="muted" id="progress-note"></p>
   </section>
 
   <section class="how">
-    <div><b>1 · Listens</b><p>AssemblyAI streaming speech-to-text with your project's terms as keyterms, and turn detection tuned for thinking pauses.</p></div>
-    <div><b>2 · Probes</b><p>The examiner builds follow-ups on your exact words and pushes on vague claims, like a real panel.</p></div>
-    <div><b>3 · Scores</b><p>Tool calls fill the rubric live on screen, then a report with strengths, fixes and practice questions.</p></div>
+    <div><span class="how-ic">◉</span><b>Hears your jargon</b><p>Terms from your report go to AssemblyAI as keyterms, and turn detection is tuned for thinking pauses.</p></div>
+    <div><span class="how-ic">↻</span><b>Probes like a panel</b><p>Follow-ups build on your exact words. Ramble past 90 seconds and it politely cuts in.</p></div>
+    <div><span class="how-ic">▲</span><b>Scores as you speak</b><p>Tool calls fill the rubric live, then a report with a model answer and a drill for your weakest area.</p></div>
   </section>
 </main>
 
 <!-- ============ LIVE ============ -->
 <main id="view-live" class="view live">
   <section class="stage">
-    <div class="orb-wrap">
-      <canvas id="orb" width="320" height="320" aria-hidden="true"></canvas>
-      <p class="orb-label" id="orb-label">Connecting…</p>
-    </div>
-
-    <div class="banner" id="ramble" hidden>You've been talking for <span id="ramble-secs">90</span>s. The examiner is about to cut in, so land your main point.</div>
     <div class="card question" id="question-card">
-      <div class="q-meta"><span class="eyebrow" id="q-num">Waiting for the first question</span><span class="tag" id="q-topic" hidden></span></div>
+      <div class="q-meta"><span class="eyebrow" id="q-num">Getting ready</span><span class="tag" id="q-topic" hidden></span></div>
       <p class="q-text" id="q-text">The examiner will introduce themselves first.</p>
     </div>
 
-    <div class="card transcript-card">
-      <div class="card-head"><span class="eyebrow">Live transcript</span></div>
-      <div id="transcript" class="transcript" aria-live="polite"></div>
+    <div class="orb-wrap">
+      <svg class="answer-ring" viewBox="0 0 200 200" aria-hidden="true"><circle cx="100" cy="100" r="96" class="ar-bg"/><circle cx="100" cy="100" r="96" class="ar-fg" id="answer-ring"/></svg>
+      <canvas id="orb" aria-hidden="true"></canvas>
     </div>
+    <p class="orb-label" id="orb-label">Connecting…</p>
+
+    <div class="captions" aria-live="polite">
+      <p class="cap examiner" id="cap-examiner"></p>
+      <p class="cap you" id="cap-you"></p>
+    </div>
+
+    <div class="banner" id="ramble" hidden>⏱ You've been talking for <span id="ramble-secs">90</span>s. Land your main point, the examiner is about to cut in.</div>
+
+    <details class="card drawer">
+      <summary><span class="eyebrow">Full transcript</span></summary>
+      <div id="transcript" class="transcript"></div>
+    </details>
   </section>
 
-  <aside class="side">
+  <aside class="side" aria-label="Examiner's mind">
+    <div class="side-title"><span class="eyebrow">Examiner's mind</span><span class="mono muted" id="scored-count">0 scored</span></div>
     <div class="card">
-      <div class="card-head"><span class="eyebrow">Rubric · live</span><span class="mono muted" id="scored-count">0 scored</span></div>
       <ul id="rubric" class="rubric"></ul>
     </div>
-    <div class="card">
-      <div class="card-head"><span class="eyebrow">Delivery</span></div>
+    <div class="card stats-card">
       <div class="stats">
         <div><span class="stat" id="m-wpm">–</span><small>words / min</small></div>
         <div><span class="stat" id="m-fill">0</span><small>fillers</small></div>
-        <div><span class="stat" id="m-think">–</span><small>avg think (s)</small></div>
+        <div><span class="stat" id="m-think">–</span><small>think (s)</small></div>
       </div>
     </div>
     <div class="card feed-card">
-      <div class="card-head"><span class="eyebrow">Examiner's notes</span></div>
       <ol id="feed" class="feed"><li class="empty">Private notes appear here after each answer.</li></ol>
     </div>
   </aside>
@@ -145,40 +166,46 @@
 <!-- ============ REPORT ============ -->
 <main id="view-report" class="view report">
   <section class="card report-head">
-    <div class="score-ring" id="score-ring"><svg viewBox="0 0 120 120"><circle cx="60" cy="60" r="52" class="ring-bg"/><circle cx="60" cy="60" r="52" class="ring-fg" id="ring-fg"/></svg><span id="overall">–</span></div>
-    <div>
+    <div class="score-ring" id="score-ring"><svg viewBox="0 0 120 120"><defs><linearGradient id="rg" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#a99cff"/><stop offset="1" stop-color="#4de8b0"/></linearGradient></defs><circle cx="60" cy="60" r="52" class="ring-bg"/><circle cx="60" cy="60" r="52" class="ring-fg" id="ring-fg"/></svg><span id="overall">–</span></div>
+    <div class="report-title">
       <p class="eyebrow" id="r-kind">Viva report</p>
       <h2 id="r-verdict">Report</h2>
       <p class="muted" id="r-sub"></p>
       <p class="delta" id="r-delta" hidden></p>
     </div>
     <div class="report-actions">
-      <button class="btn ghost" id="dl-btn">Download .md</button>
-      <button class="btn ghost" id="print-btn">Print / PDF</button>
-      <button class="btn ghost" id="retry-btn" hidden>Drill my weakest area</button>
-      <button class="btn primary" id="again-btn">Practise again</button>
+      <button class="btn primary" id="retry-btn" hidden>Drill my weakest area</button>
+      <button class="btn ghost" id="again-btn">Practise again</button>
+      <button class="btn ghost icon" id="dl-btn" title="Download as Markdown">↓ .md</button>
+      <button class="btn ghost icon" id="print-btn" title="Print or save as PDF">⎙ PDF</button>
     </div>
   </section>
 
   <div class="report-grid">
-    <section class="card"><h3>Strengths</h3><ul id="r-strengths" class="bullets good"></ul></section>
-    <section class="card"><h3>Work on next</h3><ol id="r-improve" class="bullets"></ol></section>
-    <section class="card"><h3>Rubric</h3><table class="rtable"><tbody id="r-rubric"></tbody></table></section>
-    <section class="card"><h3>Delivery</h3><div id="r-delivery" class="delivery"></div></section>
-    <section class="card wide model" id="r-model-card" hidden>
+    <section class="card radar-card">
+      <h3>Rubric</h3>
+      <div class="radar-wrap">
+        <svg id="radar" viewBox="-50 20 420 270" role="img" aria-label="Rubric scores radar chart"></svg>
+        <table class="rtable"><tbody id="r-rubric"></tbody></table>
+      </div>
+    </section>
+    <section class="card model" id="r-model-card" hidden>
       <h3>Your weakest question, answered two ways</h3>
       <p class="q-text small" id="r-model-q"></p>
       <div class="two-col">
         <div><span class="eyebrow">What you said</span><p id="r-model-yours" class="quote"></p></div>
-        <div><span class="eyebrow accent">A 5 / 5 answer</span><p id="r-model-answer" class="quote good"></p></div>
+        <div><span class="eyebrow good">A 5 / 5 answer</span><p id="r-model-answer" class="quote good"></p></div>
       </div>
     </section>
-    <section class="card wide"><h3>Practise these before the real thing</h3><ol id="r-practice" class="bullets"></ol></section>
+    <section class="card"><h3>Strengths</h3><ul id="r-strengths" class="bullets good"></ul></section>
+    <section class="card"><h3>Work on next</h3><ol id="r-improve" class="bullets"></ol></section>
+    <section class="card"><h3>Delivery</h3><div id="r-delivery" class="delivery"></div></section>
+    <section class="card"><h3>Practise before the real thing</h3><ol id="r-practice" class="bullets"></ol></section>
     <section class="card wide"><details><summary><h3>Full transcript</h3></summary><div id="r-transcript" class="transcript static"></div></details></section>
   </div>
 </main>
 
-<footer class="foot">Built for the AssemblyAI Voice Agent Hackathon · <a href="https://www.assemblyai.com/products/voice-agent-api" target="_blank" rel="noopener">Voice Agent API</a></footer>
+<footer class="foot">Built for the AssemblyAI Voice Agent Hackathon · <a href="https://www.assemblyai.com/products/voice-agent-api" target="_blank" rel="noopener">Voice Agent API</a> · <a href="https://github.com/ShermaineYap/AssemblyAI-Voice-Agent-Hackathon" target="_blank" rel="noopener">Source</a></footer>
 
 <script type="module" src="/app.js"></script>
 </body>
