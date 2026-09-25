@@ -4,6 +4,11 @@ import { ToolResultQueue } from './toolqueue.js'
 import { openAudio, toBase64, fromBase64 } from './audio.js'
 import { SAMPLES } from './samples.js'
 import { fallbackReport } from './report.js'
+import { extractPdf, pickSections } from './pdftext.js'
+import { loadHistory, saveSession, makeEntry, compareToPrevious, sparkline } from './history.js'
+
+// Seconds of one answer before the examiner cuts in. ?ramble=30 lowers it for a demo.
+const RAMBLE_SECONDS = Math.max(10, Number(new URLSearchParams(location.search).get('ramble')) || 90)
 
 const $ = (id) => document.getElementById(id)
 const form = $('setup-form')
@@ -26,6 +31,11 @@ let scores = [] // { criterion, score, evidence, tip, at }
 let report = null
 let questionsAsked = []
 const transcript = [] // { who, text }
+let focus = null // rubric id for a drill session
+let rambleTimer = null
+let rambleWarned = false
+let answerStartIdx = 0 // transcript index where the current answer began
+let lastEntry = null
 
 // ---------------------------------------------------------------- setup form
 function readForm() {
@@ -39,6 +49,7 @@ function readForm() {
     questions: Number(d.get('questions')),
     voice: d.get('voice'),
     thinkingTime: d.get('thinkingTime') === 'on',
+    focus,
   }
 }
 
@@ -97,9 +108,75 @@ form.addEventListener('submit', (e) => {
   start(readForm())
 })
 
+// ---------------------------------------------------------------- PDF upload
+const drop = $('drop')
+const pdfInput = $('pdf-input')
+drop.onclick = () => pdfInput.click()
+drop.onkeydown = (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); pdfInput.click() } }
+for (const ev of ['dragenter', 'dragover']) drop.addEventListener(ev, (e) => { e.preventDefault(); drop.classList.add('over') })
+for (const ev of ['dragleave', 'drop']) drop.addEventListener(ev, (e) => { e.preventDefault(); drop.classList.remove('over') })
+drop.addEventListener('drop', (e) => { const f = e.dataTransfer?.files?.[0]; if (f) loadPdf(f) })
+pdfInput.onchange = () => { if (pdfInput.files[0]) loadPdf(pdfInput.files[0]); pdfInput.value = '' }
+
+async function loadPdf(file) {
+  if (!/pdf$/i.test(file.type) && !/\.pdf$/i.test(file.name)) return showError('That is not a PDF.')
+  if (file.size > 40e6) return showError('That PDF is over 40 MB. Export a smaller one or paste the abstract instead.')
+  showError('')
+  drop.classList.add('busy')
+  drop.classList.remove('done')
+  $('drop-title').textContent = `Reading ${file.name}…`
+  try {
+    const { text, pages } = await extractPdf(file, (i, n) => ($('drop-sub').textContent = `Page ${i} of ${n}`))
+    const picked = pickSections(text)
+    if (!picked.context.trim()) throw new Error('No text found. If the PDF is scanned, paste the abstract instead.')
+    const v = readForm()
+    writeForm({ ...v, context: picked.context, subject: v.subject || picked.title })
+    drop.classList.add('done')
+    $('drop-title').textContent = `${file.name} · ${pages} pages`
+    $('drop-sub').textContent = picked.found.length
+      ? `Pulled out: ${picked.found.join(', ')}. Edit the text below if you like.`
+      : 'No standard headings found, so the opening pages were used. Trim the text below to the parts that matter.'
+  } catch (err) {
+    $('drop-title').textContent = 'Drop your report PDF here'
+    $('drop-sub').textContent = 'or click to choose.'
+    showError(err.message || 'Could not read that PDF.')
+  } finally {
+    drop.classList.remove('busy')
+  }
+}
+
+// ---------------------------------------------------------------- progress
+function renderProgress() {
+  let list = []
+  try { list = loadHistory(localStorage) } catch {}
+  const card = $('progress')
+  if (list.length < 1) { card.hidden = true; return }
+  card.hidden = false
+  $('progress-count').textContent = `${list.length} session${list.length === 1 ? '' : 's'}`
+  const recent = list.slice(-10)
+  const set = (id, key, min, max, fmt) => {
+    const pts = sparkline(recent.map((e) => e[key]), 160, 40, min, max)
+    $(`spark-${id}`).setAttribute('points', pts)
+    $(`spark-${id}`).parentElement.hidden = !pts
+    const last = recent.at(-1)[key]
+    $(`spark-${id}-last`).textContent = last == null ? '–' : fmt(last)
+  }
+  set('score', 'overall', 0, 100, (v) => `${v} / 100`)
+  set('fill', 'fillersPer100', 0, null, (v) => `${v}`)
+  set('think', 'avgThinkSec', 0, null, (v) => `${v}s`)
+  const weak = {}
+  for (const e of recent) if (e.weakest) weak[e.weakest.name] = (weak[e.weakest.name] || 0) + 1
+  const top = Object.entries(weak).sort((a, b) => b[1] - a[1])[0]
+  $('progress-note').textContent = list.length < 2
+    ? 'Run another session to see a trend.'
+    : top ? `Most often your weakest area: ${top[0]}. Use "Drill my weakest area" on a report to work on it.` : ''
+}
+renderProgress()
+
 // ---------------------------------------------------------------- session
 function showError(msg) {
   const el = $('setup-error')
+  el.className = 'error'
   el.textContent = msg
   el.hidden = !msg
 }
@@ -170,6 +247,7 @@ function handle(msg) {
       audio?.flush() // barge-in: stop the examiner mid-word
       metrics.speechStarted()
       setStatus('listening')
+      startRambleClock()
       break
     case 'input.speech.stopped':
       metrics.speechStopped()
@@ -186,6 +264,7 @@ function handle(msg) {
     }
     case 'reply.started':
       setStatus('speaking')
+      stopRambleClock()
       break
     case 'reply.audio':
       audio?.play(fromBase64(msg.data))
@@ -211,6 +290,42 @@ function handle(msg) {
       finalize()
       break
   }
+}
+
+// ---------------------------------------------------------------- rambling alarm
+// One answer = from the examiner's last reply until its next one. The clock
+// starts on the first speech and is only reset when the examiner replies, so
+// pauses don't restart it. At RAMBLE_SECONDS the examiner is asked to cut in.
+let answerClockStart = 0
+function startRambleClock() {
+  if (answerClockStart || ending) return
+  answerClockStart = Date.now()
+  rambleWarned = false
+  rambleTimer = setInterval(() => {
+    const secs = Math.floor((Date.now() - answerClockStart) / 1000)
+    if (secs >= RAMBLE_SECONDS - 15 && !rambleWarned) {
+      $('ramble-secs').textContent = String(secs)
+      $('ramble').hidden = false
+    }
+    if (secs >= RAMBLE_SECONDS - 15) $('ramble-secs').textContent = String(secs)
+    if (secs >= RAMBLE_SECONDS && !rambleWarned) {
+      rambleWarned = true
+      if (ws?.readyState === 1 && ws.ready) {
+        ws.send(JSON.stringify({
+          type: 'reply.create',
+          instructions: `The candidate has now been talking for ${secs} seconds on this one answer. Cut in politely with one sentence asking them to finish with their single most important point. Do not ask a new question yet.`,
+        }))
+        addLine('examiner', '(cutting in: the answer has run long)')
+      }
+    }
+  }, 1000)
+}
+function stopRambleClock() {
+  clearInterval(rambleTimer)
+  rambleTimer = null
+  answerClockStart = 0
+  $('ramble').hidden = true
+  answerStartIdx = transcript.length
 }
 
 function onTool({ call_id, name, arguments: raw }) {
@@ -280,6 +395,18 @@ function finalize() {
   setView('report')
 }
 
+function saveToHistory(overall, m) {
+  try {
+    const entry = makeEntry({ cfg, overall, metrics: m, stats: criterionStats() })
+    const before = loadHistory(localStorage)
+    const cmp = compareToPrevious(before, entry)
+    saveSession(localStorage, entry)
+    lastEntry = entry
+    renderProgress()
+    return cmp
+  } catch { return null }
+}
+
 function teardown() {
   clearInterval(timer)
   try { audio?.close() } catch {}
@@ -288,6 +415,9 @@ function teardown() {
 }
 
 function resetLive() {
+  stopRambleClock()
+  answerStartIdx = 0
+  lastEntry = null
   ending = finished = false
   report = null
   scores = []
@@ -332,7 +462,7 @@ function showQuestion({ number, topic, question, follow_up }) {
   $('q-topic').classList.toggle('fu', Boolean(follow_up))
   $('q-text').textContent = question || ''
   card.animate([{ opacity: 0.4, transform: 'translateY(4px)' }, { opacity: 1, transform: 'none' }], { duration: 300, easing: 'ease-out' })
-  questionsAsked.push({ number, topic, question, follow_up: Boolean(follow_up) })
+  questionsAsked.push({ number, topic, question, follow_up: Boolean(follow_up), at: transcript.length })
 }
 
 function criterionStats() {
@@ -542,7 +672,57 @@ function renderReport() {
 
   const t = $('r-transcript')
   t.replaceChildren(...transcript.map((l) => lineEl(l.who, l.text)))
+
+  // Weakest question, answered two ways.
+  const mc = $('r-model-card')
+  if (r.weakest_question && r.model_answer) {
+    mc.hidden = false
+    $('r-model-q').textContent = r.weakest_question
+    $('r-model-yours').textContent = answerTo(r.weakest_question) || 'No answer was captured for this question.'
+    $('r-model-answer').textContent = r.model_answer
+  } else mc.hidden = true
+
+  // Drill button for the weakest criterion.
+  const weakest = stats.filter((c) => c.avg != null).sort((a, b) => a.avg - b.avg)[0]
+  const rb = $('retry-btn')
+  rb.hidden = !weakest
+  if (weakest) {
+    rb.textContent = `Drill: ${weakest.name}`
+    rb.onclick = () => { focus = weakest.id; setView('setup'); showFocusNote(weakest.name) }
+  }
+
+  // Change since last time, saved once per session.
+  const cmp = finished && !lastEntry ? saveToHistory(overall, m) : null
+  const dl = $('r-delta')
+  if (cmp) {
+    dl.hidden = false
+    const part = (label, v, goodWhenUp, unit = '') => v == null || v === 0 ? '' : `${label} <b class="${(v > 0) === goodWhenUp ? 'up' : 'down'}">${v > 0 ? '+' : ''}${v}${unit}</b>`
+    const parts = [part('Score', cmp.overall, true), part('fillers / 100', cmp.fillersPer100, false), part('thinking', cmp.avgThinkSec, false, 's')].filter(Boolean)
+    dl.innerHTML = parts.length ? `Since your last session: ${parts.join(' · ')}` : 'Same as your last session.'
+  } else dl.hidden = true
   window.__vvReport = { report: r, overall, scores, metrics: m }
+}
+
+// The candidate's lines between when a question was shown and the next one.
+function answerTo(question) {
+  const i = questionsAsked.findIndex((q) => q.question === question)
+  if (i < 0) return ''
+  const from = questionsAsked[i].at ?? 0
+  const to = questionsAsked[i + 1]?.at ?? transcript.length
+  return transcript.slice(from, to).filter((l) => l.who === 'you').map((l) => l.text).join(' ')
+}
+
+function showFocusNote(name) {
+  const el = $('setup-error')
+  el.hidden = false
+  el.className = 'error focus'
+  el.innerHTML = ''
+  el.append(`Drill session: every question will target "${name}". `)
+  const clear = document.createElement('a')
+  clear.href = '#'
+  clear.textContent = 'Switch back to a full viva'
+  clear.onclick = (e) => { e.preventDefault(); focus = null; showError('') }
+  el.append(clear)
 }
 
 function reportMarkdown() {
@@ -563,6 +743,7 @@ function reportMarkdown() {
     `- Pace: ${r.metrics.wpm ?? '–'} wpm (${paceLabel(r.metrics.wpm)})`,
     `- Filler words: ${r.metrics.fillerTotal} (${r.metrics.fillersPer100} per 100 words)`,
     `- Average thinking time: ${r.metrics.avgThinkSec ?? '–'}s`, '',
+    ...(r.report.model_answer ? ['## Weakest question', r.report.weakest_question, '', '**What you said:** ' + (answerTo(r.report.weakest_question) || '(not captured)'), '', '**A 5/5 answer:** ' + r.report.model_answer, ''] : []),
     '## Practice questions', ...(r.report.practice_questions || []).map((s) => `- ${s}`), '',
     '## Transcript', ...transcript.map((l) => `**${l.who === 'you' ? cfg.name || 'You' : 'Examiner'}:** ${l.text}  `),
   ]
@@ -581,7 +762,7 @@ $('print-btn').onclick = () => {
   document.querySelector('#view-report details')?.setAttribute('open', '')
   window.print()
 }
-$('again-btn').onclick = () => setView('setup')
+$('again-btn').onclick = () => { focus = null; showError(''); setView('setup') }
 
 // Test hook: lets the automated UI test drive the page without a microphone.
 window.__vv = {

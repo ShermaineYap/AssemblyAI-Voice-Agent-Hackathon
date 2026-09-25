@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>VivaVoice · practice your viva out loud</title>
-<meta name="description" content="A voice examiner that grills you on your own project, scores every answer live, and hands you a report. Built on the AssemblyAI Voice Agent API.">
+<meta name="description" content="Drop in your report PDF and a voice examiner grills you on it, scores every answer live, cuts in when you ramble, and hands you a report with a model answer. Built on the AssemblyAI Voice Agent API.">
 <link rel="icon" href="/favicon.svg" type="image/svg+xml">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -28,7 +28,7 @@
   <section class="hero">
     <p class="eyebrow">Voice agent · AssemblyAI</p>
     <h1>Rehearse your viva <em>out loud</em>, with an examiner who read your report.</h1>
-    <p class="lede">Paste your abstract or a job description. VivaVoice questions you on it by voice, follows up on what you actually said, scores each answer against a rubric while you talk, and gives you a written report at the end.</p>
+    <p class="lede">Drop in your report PDF, or paste an abstract or a job description. VivaVoice questions you on it by voice, follows up on what you actually said, scores each answer against a rubric while you talk, and gives you a written report at the end.</p>
   </section>
 
   <form id="setup-form" class="card form" autocomplete="off">
@@ -40,6 +40,14 @@
     <div class="row two">
       <label class="field"><span>Your name</span><input name="name" maxlength="60" placeholder="e.g. Aisyah"></label>
       <label class="field"><span id="subject-label">Project title</span><input name="subject" maxlength="160" required placeholder="e.g. Crop disease detection with YOLOv8"></label>
+    </div>
+
+    <div class="drop" id="drop" tabindex="0" role="button" aria-label="Upload your report as a PDF">
+      <input type="file" id="pdf-input" accept="application/pdf" hidden>
+      <div class="drop-inner">
+        <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6"/><path d="M12 18v-6"/><path d="m9 15 3-3 3 3"/></svg>
+        <div><b id="drop-title">Drop your report PDF here</b><br><small id="drop-sub">or click to choose. The abstract, methods, results and conclusion are pulled out in your browser; the file never leaves your computer.</small></div>
+      </div>
     </div>
 
     <label class="field"><span id="context-label">Abstract, summary or key sections of your report</span>
@@ -77,6 +85,16 @@
     <p class="fineprint">Use headphones for the best experience. Audio goes to AssemblyAI for the live session only; nothing is stored by VivaVoice.</p>
   </form>
 
+  <section class="card progress" id="progress" hidden>
+    <div class="card-head"><span class="eyebrow">Your progress</span><span class="mono muted" id="progress-count"></span></div>
+    <div class="progress-grid">
+      <div><small>Overall score</small><svg class="spark" viewBox="0 0 160 40" preserveAspectRatio="none" aria-hidden="true"><polyline id="spark-score" fill="none" stroke="var(--accent)" stroke-width="2.5" stroke-linejoin="round"/></svg><b id="spark-score-last">–</b></div>
+      <div><small>Fillers / 100 words</small><svg class="spark" viewBox="0 0 160 40" preserveAspectRatio="none" aria-hidden="true"><polyline id="spark-fill" fill="none" stroke="var(--warn)" stroke-width="2.5" stroke-linejoin="round"/></svg><b id="spark-fill-last">–</b></div>
+      <div><small>Thinking time (s)</small><svg class="spark" viewBox="0 0 160 40" preserveAspectRatio="none" aria-hidden="true"><polyline id="spark-think" fill="none" stroke="var(--good)" stroke-width="2.5" stroke-linejoin="round"/></svg><b id="spark-think-last">–</b></div>
+    </div>
+    <p class="muted" id="progress-note"></p>
+  </section>
+
   <section class="how">
     <div><b>1 · Listens</b><p>AssemblyAI streaming speech-to-text with your project's terms as keyterms, and turn detection tuned for thinking pauses.</p></div>
     <div><b>2 · Probes</b><p>The examiner builds follow-ups on your exact words and pushes on vague claims, like a real panel.</p></div>
@@ -92,6 +110,7 @@
       <p class="orb-label" id="orb-label">Connecting…</p>
     </div>
 
+    <div class="banner" id="ramble" hidden>You've been talking for <span id="ramble-secs">90</span>s. The examiner is about to cut in, so land your main point.</div>
     <div class="card question" id="question-card">
       <div class="q-meta"><span class="eyebrow" id="q-num">Waiting for the first question</span><span class="tag" id="q-topic" hidden></span></div>
       <p class="q-text" id="q-text">The examiner will introduce themselves first.</p>
@@ -131,10 +150,12 @@
       <p class="eyebrow" id="r-kind">Viva report</p>
       <h2 id="r-verdict">Report</h2>
       <p class="muted" id="r-sub"></p>
+      <p class="delta" id="r-delta" hidden></p>
     </div>
     <div class="report-actions">
       <button class="btn ghost" id="dl-btn">Download .md</button>
       <button class="btn ghost" id="print-btn">Print / PDF</button>
+      <button class="btn ghost" id="retry-btn" hidden>Drill my weakest area</button>
       <button class="btn primary" id="again-btn">Practise again</button>
     </div>
   </section>
@@ -144,6 +165,14 @@
     <section class="card"><h3>Work on next</h3><ol id="r-improve" class="bullets"></ol></section>
     <section class="card"><h3>Rubric</h3><table class="rtable"><tbody id="r-rubric"></tbody></table></section>
     <section class="card"><h3>Delivery</h3><div id="r-delivery" class="delivery"></div></section>
+    <section class="card wide model" id="r-model-card" hidden>
+      <h3>Your weakest question, answered two ways</h3>
+      <p class="q-text small" id="r-model-q"></p>
+      <div class="two-col">
+        <div><span class="eyebrow">What you said</span><p id="r-model-yours" class="quote"></p></div>
+        <div><span class="eyebrow accent">A 5 / 5 answer</span><p id="r-model-answer" class="quote good"></p></div>
+      </div>
+    </section>
     <section class="card wide"><h3>Practise these before the real thing</h3><ol id="r-practice" class="bullets"></ol></section>
     <section class="card wide"><details><summary><h3>Full transcript</h3></summary><div id="r-transcript" class="transcript static"></div></details></section>
   </div>

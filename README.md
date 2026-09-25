@@ -24,6 +24,7 @@ VivaVoice gives you unlimited spoken practice on **your own material**:
 
 | | |
 |---|---|
+| **Drop in your report PDF** | The abstract, methodology, results and conclusion are pulled out in the browser with pdf.js; the file never leaves your computer. Or paste any text. |
 | **Two modes** | *Project viva* (problem, technical depth, design justification, evaluation, communication) and *Job interview* (role fit, technical, problem solving, behavioural/STAR, communication). |
 | **Two examiner personas** | Supportive but rigorous, or a strict external examiner who gives no hints. |
 | **Live rubric** | The agent calls `record_score` after each answer, so bars fill in and private examiner notes (evidence + tip) appear as you speak. |
@@ -32,6 +33,10 @@ VivaVoice gives you unlimited spoken practice on **your own material**:
 | **Jargon-aware listening** | Technical terms from your abstract (e.g. *YOLOv8n, NCNN, PlantVillage, Cameron Highlands*) are sent as **keyterms**, so AssemblyAI transcribes your field's vocabulary correctly. |
 | **Thinking time** | One toggle raises the turn-detection silence thresholds, so pausing to think mid-answer doesn't end your turn. |
 | **Barge-in** | Interrupt the examiner at any time; playback stops mid-word. |
+| **Rambling alarm** | If one answer runs past 90 s, the examiner cuts in and asks for your main point, like a real panel. (`?ramble=30` on the URL shortens it for demos.) |
+| **Model answer** | The report shows your weakest question with what you said next to a 5/5 answer built from your own material. |
+| **Progress** | Every report is kept in your browser: score, fillers and thinking time trend across sessions, plus your most common weak area. |
+| **Drill mode** | One button on the report starts a session that targets only your weakest criterion. |
 | **Report** | Overall mark, verdict, strengths, prioritised improvements, rubric table, delivery stats, practice questions and full transcript. Export as Markdown or print to PDF. |
 
 ![Report](docs/screenshots/report.png)
@@ -66,9 +71,9 @@ sequenceDiagram
 | Inline `session.update` | System prompt is generated per session from the student's abstract, mode, persona and question count |
 | `input.keyterms` | Up to 100 technical terms pulled from the abstract, to bias STT toward the student's jargon |
 | `input.turn_detection` | "Thinking time" mode: `min_silence` 1600 ms, `max_silence` 4500 ms (vs 800/2500) |
-| Client-side tools | `show_question`, `record_score` (with an enum of rubric ids), `finish_session` |
+| Client-side tools | `show_question`, `record_score` (with an enum of rubric ids), `finish_session` (report, weakest question and model answer) |
 | Tool timing rules | `tool.result` queued and sent only when `reply.done` is the latest event; dropped on interrupted replies ([toolqueue.js](public/toolqueue.js)) |
-| `reply.create` | "End session" asks the examiner to wrap up and produce the report instead of hanging up cold |
+| `reply.create` | "End session" asks the examiner to wrap up and produce the report instead of hanging up cold; the rambling alarm uses it to make the examiner cut in mid-answer |
 | `input.speech.started` / `stopped` | Barge-in (flush playback), plus speaking-time and thinking-time metrics |
 | Temporary tokens | Browser never sees the API key; the server rate-limits token minting per IP |
 | `session.end` | Sent explicitly so the session isn't left open and billing |
@@ -84,7 +89,7 @@ cp .env.example .env        # then put your key in it: ASSEMBLYAI_API_KEY=...
 npm start                   # → http://localhost:3000
 ```
 
-Open the page, click **Fill with a sample** (or paste your own abstract), then **Start the viva**. Headphones are recommended.
+Open the page, click **Fill with a sample** (or drop in your report PDF), then **Start the viva**. Headphones are recommended.
 
 Run the tests:
 
@@ -116,14 +121,15 @@ public/
   audio.js            AudioWorklet mic capture + ring-buffer playback, resampled to 24 kHz
   report.js           fallback report if the session ends early
   samples.js          one-click sample viva and interview
+  pdftext.js          pdf.js extraction and section picking (abstract, methods, results…)
+  history.js          progress across sessions, kept in localStorage
+  vendor/pdfjs/       pdf.js 6.3 (Apache-2.0), unmodified
 test/                 node:test unit + server tests
 ```
 
 ## Roadmap
 
-- Upload a PDF report and extract the abstract automatically
 - Panel mode: two examiner voices taking turns
-- Progress over time across practice sessions
 - Phone-in practice via Twilio SIP for students without a good laptop mic
 - Bahasa Melayu and Mandarin examiner modes
 

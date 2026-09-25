@@ -141,8 +141,10 @@ export const TOOLS = (rubric) => [
         strengths: { type: 'array', items: { type: 'string' }, description: 'Two or three specific strengths.' },
         improvements: { type: 'array', items: { type: 'string' }, description: 'Two or three specific things to work on, most important first.' },
         practice_questions: { type: 'array', items: { type: 'string' }, description: 'Two or three questions to practise before the real thing.' },
+        weakest_question: { type: 'string', description: 'The main question (exactly as asked) that the candidate answered least well.' },
+        model_answer: { type: 'string', description: 'A model 5/5 spoken answer to weakest_question, three to five sentences, in the first person, using the specifics from the submitted material. It should include what the candidate\'s answer was missing.' },
       },
-      required: ['overall', 'verdict', 'strengths', 'improvements', 'practice_questions'],
+      required: ['overall', 'verdict', 'strengths', 'improvements', 'practice_questions', 'weakest_question', 'model_answer'],
     },
     execution_mode: 'interactive',
     timeout_seconds: 15,
@@ -155,6 +157,10 @@ export function buildSystemPrompt(cfg) {
   const n = Math.max(2, Math.min(8, Number(cfg.questions) || 4))
   const rubric = mode.rubric.map((r) => `- ${r.id}: ${r.name} (${r.hint})`).join('\n')
   const context = (cfg.context || '').slice(0, 6000)
+  const focusCrit = mode.rubric.find((r) => r.id === cfg.focus)
+  const focus = focusCrit
+    ? ` This is a drill session: make every question probe "${focusCrit.name}" (${focusCrit.hint}), from different angles, and record every score under the ${focusCrit.id} criterion.`
+    : ''
   return `You are ${mode.examiner}. You are speaking with ${cfg.name || 'the candidate'} on a live voice call.
 
 Subject: ${cfg.subject || 'not given'}
@@ -167,7 +173,7 @@ ${context || 'Nothing submitted. Ask them to describe it briefly first.'}
 Persona: ${persona}
 
 How to run the session:
-- Ask ${n} main questions, one at a time, covering different rubric criteria. Base every question on the submitted material above, not generic textbook questions.
+- Ask ${n} main questions, one at a time, covering different rubric criteria. Base every question on the submitted material above, not generic textbook questions.${focus}
 - After each answer, ask at most one short follow-up when the answer was vague, missing a number, or made a claim worth testing. Build the follow-up on the exact words they used.
 - Every time you ask a main question or follow-up, also call show_question.
 - When the candidate finishes an answer, call record_score for it before you move on. Scores are private: never say a score, a number out of five, or "good answer" style grading aloud. A brief neutral acknowledgement is fine.
@@ -176,6 +182,7 @@ How to run the session:
 - After the last question, give a two sentence spoken summary: one strength and the single most important improvement. Then say goodbye and call finish_session.
 - Be calibrated: 5 means nothing important was missing. If an answer lacked a number, evidence or a trade-off, it is a 3 or 4, and the tip must say what was missing. A tip is never "none".
 - If the candidate asks to stop early, wrap up the same way with what you have.
+- If you receive an instruction that the candidate has been talking for too long, cut in politely, in one sentence, and ask them to finish with their single most important point. Then score what you heard.
 
 Rubric criteria ids:
 ${rubric}

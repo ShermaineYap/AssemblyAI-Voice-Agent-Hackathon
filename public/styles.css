@@ -209,3 +209,35 @@ details summary::after { content: " ▾"; color: var(--muted); }
 }
 .status { white-space: nowrap; }
 @media (max-width: 480px) { .brand span { display: none; } }
+
+/* PDF drop zone */
+.drop { border: 2px dashed var(--border); border-radius: 12px; padding: 16px 18px; cursor: pointer; color: var(--muted); transition: border-color .15s, background .15s; }
+.drop:hover, .drop:focus-visible, .drop.over { border-color: var(--accent); background: var(--accent-soft); color: var(--text); outline: none; }
+.drop.busy { cursor: progress; }
+.drop.done { border-style: solid; border-color: var(--good); }
+.drop-inner { display: flex; gap: 14px; align-items: center; font-size: 14px; }
+.drop-inner svg { flex-shrink: 0; color: var(--accent); }
+.drop small { color: var(--muted); }
+
+/* progress */
+.progress { max-width: 860px; margin-top: 16px; }
+.progress-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px; }
+.progress-grid > div { display: grid; gap: 6px; }
+.progress-grid small { color: var(--muted); font-size: 12px; }
+.progress-grid b { font: 400 22px var(--serif); color: var(--text-strong); }
+.spark { width: 100%; height: 40px; overflow: visible; }
+#progress-note { font-size: 13px; margin-top: 12px; }
+
+/* report extras */
+.delta { font-size: 13px; color: var(--muted); margin-top: 6px; }
+.delta b.up { color: var(--good); } .delta b.down { color: var(--bad); }
+.q-text.small { font-size: 20px; margin-bottom: 14px; }
+.two-col { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
+.quote { margin-top: 6px; padding: 12px 14px; border-radius: 10px; background: var(--surface-2); font-size: 14px; line-height: 1.55; }
+.quote.good { background: var(--good-soft); }
+.eyebrow.accent { color: var(--accent); }
+
+/* rambling banner */
+.banner { background: var(--warn-soft); color: var(--warn); border-radius: 12px; padding: 12px 16px; font-size: 14px; font-weight: 500; animation: rise .3s ease-out; }
+@media (max-width: 640px) { .progress-grid, .two-col { grid-template-columns: 1fr; } }
+.error.focus { color: var(--accent); background: var(--accent-soft); } .error.focus a { margin-left: 6px; }
