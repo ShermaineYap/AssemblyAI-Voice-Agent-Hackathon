@@ -35,11 +35,13 @@ export class DeliveryMetrics {
     this._speakingMs = 0
     this._agentDoneAt = null
     this._pendingThink = null
+    this._newAnswer = true
   }
 
   // The examiner's audio finished playing: the candidate's thinking clock starts.
   agentFinished() {
     this._agentDoneAt = this.now()
+    this._newAnswer = true
   }
 
   speechStarted() {
@@ -64,12 +66,19 @@ export class DeliveryMetrics {
     if (!words) return null
     const f = countFillers(text)
     for (const [k, v] of Object.entries(f)) this.fillers[k] = (this.fillers[k] || 0) + v
-    const turn = {
-      words,
-      speakingMs: this._speakingMs,
-      thinkMs: this._pendingThink,
-      fillers: Object.values(f).reduce((a, b) => a + b, 0),
+    const fillers = Object.values(f).reduce((a, b) => a + b, 0)
+    // A pause mid-answer produces several final transcripts; they are one
+    // answer until the examiner speaks again.
+    const last = this.turns.at(-1)
+    if (last && !this._newAnswer) {
+      last.words += words
+      last.speakingMs += this._speakingMs
+      last.fillers += fillers
+      this._speakingMs = 0
+      return last
     }
+    this._newAnswer = false
+    const turn = { words, speakingMs: this._speakingMs, thinkMs: this._pendingThink, fillers }
     this.turns.push(turn)
     this._speakingMs = 0
     this._pendingThink = null

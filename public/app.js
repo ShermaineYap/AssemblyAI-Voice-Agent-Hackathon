@@ -431,9 +431,16 @@ function addLine(who, text) {
   if (!text) return
   partials[who]?.el.remove()
   delete partials[who]
-  transcript.push({ who, text })
   const box = $('transcript')
-  box.append(lineEl(who, text))
+  const prev = transcript.at(-1)
+  // Consecutive finals from the candidate are one answer said with pauses.
+  if (who === 'you' && prev?.who === 'you' && box.lastElementChild?.classList.contains('you')) {
+    prev.text += ' ' + text
+    box.lastElementChild.replaceWith(lineEl(who, prev.text))
+  } else {
+    transcript.push({ who, text })
+    box.append(lineEl(who, text))
+  }
   box.scrollTop = box.scrollHeight
 }
 

@@ -54,3 +54,17 @@ test('thinking time loosens turn detection', () => {
   assert.ok(turnDetection(true).max_silence > turnDetection(false).max_silence)
   assert.ok(turnDetection(true).min_silence > turnDetection(false).min_silence)
 })
+
+test('keyterms include repeated lowercase domain phrases and the glossary', () => {
+  const terms = extractKeyterms(SAMPLES.viva.subject, SAMPLES.viva.context)
+  for (const t of ['early blight', 'late blight', 'quantization', 'activations', 'zero point']) {
+    assert.ok(terms.includes(t), `missing ${t}`)
+  }
+  assert.ok(terms.length <= 100)
+})
+
+test('prompt asks for every criterion and calibrated scores', () => {
+  const p = buildSessionUpdate({ mode: 'viva', context: 'x' }).session.system_prompt
+  assert.match(p, /every rubric criterion/)
+  assert.match(p, /never "none"/)
+})

@@ -62,8 +62,34 @@ export function extractKeyterms(...texts) {
   }
   // Capitalised phrases not at sentence start (Random Forest, Kuala Lumpur).
   for (const m of text.matchAll(/(?<![.!?]\s)(?<!^)\b([A-Z][a-z]+(?:\s+[A-Z][a-z]+){1,3})\b/gm)) add(m[1])
+  // Lowercase domain phrases: two-word phrases whose head word keeps coming
+  // back (early blight, late blight, leaf mould). A live test transcribed
+  // "early blight" as "a leaf black" before this rule existed.
+  const words = text.toLowerCase().match(/[a-z][a-z-]+/g) || []
+  const freq = {}
+  for (const w of words) if (!STOP.has(w) && w.length > 3) freq[w] = (freq[w] || 0) + 1
+  const pairs = {}
+  // Pairs never cross punctuation, so "healthy, early blight" gives no "healthy early".
+  for (const clause of text.toLowerCase().split(/[.,;:()\n!?]+/)) {
+    const cw = clause.match(/[a-z][a-z]+/g) || []
+    for (let i = 1; i < cw.length; i++) {
+      const [a, b] = [cw[i - 1], cw[i]]
+      if (STOP.has(a) || STOP.has(b) || a.length < 3 || b.length < 4) continue
+      if ((freq[b] || 0) >= 3) pairs[`${a} ${b}`] = (pairs[`${a} ${b}`] || 0) + 1
+    }
+  }
+  for (const p of Object.keys(pairs)) add(p)
+  for (const [w, n] of Object.entries(freq).sort((x, y) => y[1] - x[1])) if (n >= 4) add(w)
+  // Everyday technical vocabulary that examiners and candidates say aloud.
+  for (const g of GLOSSARY) if (found.length < 100) add(g)
   return found.slice(0, 100)
 }
+
+const GLOSSARY = [
+  'quantization', 'quantisation', 'activations', 'zero point', 'inference', 'latency', 'augmentation',
+  'overfitting', 'precision', 'recall', 'F1 score', 'mAP', 'ablation', 'calibration', 'baseline',
+  'confusion matrix', 'domain shift', 'hyperparameters', 'fine-tuning', 'dataset',
+]
 
 export const TOOLS = (rubric) => [
   {
@@ -146,7 +172,9 @@ How to run the session:
 - Every time you ask a main question or follow-up, also call show_question.
 - When the candidate finishes an answer, call record_score for it before you move on. Scores are private: never say a score, a number out of five, or "good answer" style grading aloud. A brief neutral acknowledgement is fine.
 - If they say they don't know, accept it, record a low score, and move on. If they ask you to repeat, repeat the question in simpler words.
+- Before you wrap up, make sure every rubric criterion has at least one record_score. Communication is judged across the whole session, so record it once at the end based on clarity, structure and confidence overall.
 - After the last question, give a two sentence spoken summary: one strength and the single most important improvement. Then say goodbye and call finish_session.
+- Be calibrated: 5 means nothing important was missing. If an answer lacked a number, evidence or a trade-off, it is a 3 or 4, and the tip must say what was missing. A tip is never "none".
 - If the candidate asks to stop early, wrap up the same way with what you have.
 
 Rubric criteria ids:

@@ -43,3 +43,18 @@ test('pace labels', () => {
   assert.match(paceLabel(140), /Good/)
   assert.match(paceLabel(200), /Fast/)
 })
+
+test('pauses inside one answer count as one answer', () => {
+  let t = 0
+  const m = new DeliveryMetrics(() => t)
+  m.agentFinished()
+  t = 1000; m.speechStarted(); t = 3000; m.userTurn('The main reason is connectivity.')
+  t = 4000; m.speechStarted(); t = 6000; m.userTurn('So it works offline, um.')
+  m.agentFinished()
+  t = 9000; m.speechStarted(); t = 11000; m.userTurn('Second answer here.')
+  const s = m.summary()
+  assert.equal(s.answers, 2)
+  assert.equal(s.words, 13)
+  assert.equal(s.avgThinkSec, 2)
+  assert.equal(s.fillerTotal, 1)
+})
