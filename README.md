@@ -6,7 +6,7 @@ VivaVoice is a real-time voice agent for students and job seekers. Paste your pr
 
 Built for the [AssemblyAI Voice Agent Hackathon](https://lablab.ai/ai-hackathons/assemblyai-voice-agent-hackathon) on the **[AssemblyAI Voice Agent API](https://www.assemblyai.com/docs/voice-agents/voice-agent-api)**.
 
-![Live session](docs/screenshots/live.png)
+![VivaVoice](docs/cover.png)
 
 ---
 
@@ -39,7 +39,9 @@ VivaVoice gives you unlimited spoken practice on **your own material**:
 | **Drill mode** | One button on the report starts a session that targets only your weakest criterion. |
 | **Report** | Overall mark, verdict, strengths, prioritised improvements, rubric table, delivery stats, practice questions and full transcript. Export as Markdown or print to PDF. |
 
-![Report](docs/screenshots/report.png)
+| Live session | Report |
+|---|---|
+| ![Live session](docs/screenshots/live.png) | ![Report](docs/screenshots/report.png) |
 
 ## How it uses AssemblyAI
 
@@ -119,6 +121,7 @@ public/
   toolqueue.js        tool.result timing per the Voice Agent API rules
   metrics.js          pace, filler words, thinking time
   audio.js            AudioWorklet mic capture + ring-buffer playback, resampled to 24 kHz
+  aura.js             WebGL orb that reacts to both voices and changes colour with agent state
   report.js           fallback report if the session ends early
   samples.js          one-click sample viva and interview
   pdftext.js          pdf.js extraction and section picking (abstract, methods, results…)
