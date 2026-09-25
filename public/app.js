@@ -1,0 +1,582 @@
+import { MODES, buildSessionUpdate, extractKeyterms } from './session.js'
+import { DeliveryMetrics, countFillers, paceLabel } from './metrics.js'
+import { ToolResultQueue } from './toolqueue.js'
+import { openAudio, toBase64, fromBase64 } from './audio.js'
+import { SAMPLES } from './samples.js'
+import { fallbackReport } from './report.js'
+
+const $ = (id) => document.getElementById(id)
+const form = $('setup-form')
+const STORE_KEY = 'vivavoice.setup.v1'
+
+// ---------------------------------------------------------------- state
+let ws = null
+let audio = null
+let cfg = null
+let queue = null
+let metrics = null
+let startedAt = 0
+let timer = null
+let ending = false
+let finished = false
+let agentPlaying = false
+let micLevel = 0
+let speakerLevel = 0
+let scores = [] // { criterion, score, evidence, tip, at }
+let report = null
+let questionsAsked = []
+const transcript = [] // { who, text }
+
+// ---------------------------------------------------------------- setup form
+function readForm() {
+  const d = new FormData(form)
+  return {
+    mode: d.get('mode'),
+    name: String(d.get('name') || '').trim(),
+    subject: String(d.get('subject') || '').trim(),
+    context: String(d.get('context') || '').trim(),
+    persona: d.get('persona'),
+    questions: Number(d.get('questions')),
+    voice: d.get('voice'),
+    thinkingTime: d.get('thinkingTime') === 'on',
+  }
+}
+
+function writeForm(v) {
+  for (const [k, val] of Object.entries(v)) {
+    const els = form.elements[k]
+    if (!els) continue
+    if (els instanceof RadioNodeList) {
+      for (const r of els) r.checked = r.value === val
+    } else if (els.type === 'checkbox') els.checked = Boolean(val)
+    else els.value = val
+  }
+  syncForm()
+}
+
+function syncForm() {
+  const v = readForm()
+  const mode = MODES[v.mode]
+  $('subject-label').textContent = mode.subjectLabel
+  $('context-label').textContent = mode.contextLabel
+  form.elements.subject.placeholder = v.mode === 'interview' ? 'e.g. Junior Data Analyst' : 'e.g. Crop disease detection with YOLOv8'
+  $('start-btn').textContent = v.mode === 'interview' ? 'Start the interview' : 'Start the viva'
+  $('char-count').textContent = v.context.length
+  const terms = extractKeyterms(v.subject, v.context)
+  $('keyterm-preview').textContent = terms.length ? terms.slice(0, 12).join(', ') + (terms.length > 12 ? ` +${terms.length - 12}` : '') : 'none yet'
+  try { localStorage.setItem(STORE_KEY, JSON.stringify(v)) } catch {}
+}
+
+form.addEventListener('input', syncForm)
+form.addEventListener('change', syncForm)
+$('sample-btn').onclick = () => {
+  const mode = readForm().mode
+  writeForm({ ...readForm(), ...SAMPLES[mode] })
+}
+try {
+  const saved = JSON.parse(localStorage.getItem(STORE_KEY) || 'null')
+  if (saved) writeForm(saved)
+} catch {}
+syncForm()
+
+async function listMics() {
+  if (!navigator.mediaDevices?.enumerateDevices) return
+  const devices = (await navigator.mediaDevices.enumerateDevices())
+    .filter((d) => d.kind === 'audioinput' && d.deviceId !== 'default' && d.deviceId !== 'communications')
+  const sel = $('mic')
+  const chosen = sel.value
+  sel.replaceChildren(new Option('Default microphone', ''))
+  devices.forEach((d, i) => sel.append(new Option(d.label || `Microphone ${i + 1}`, d.deviceId)))
+  if (devices.some((d) => d.deviceId === chosen)) sel.value = chosen
+}
+listMics()
+navigator.mediaDevices?.addEventListener?.('devicechange', listMics)
+
+form.addEventListener('submit', (e) => {
+  e.preventDefault()
+  start(readForm())
+})
+
+// ---------------------------------------------------------------- session
+function showError(msg) {
+  const el = $('setup-error')
+  el.textContent = msg
+  el.hidden = !msg
+}
+
+async function start(config) {
+  showError('')
+  if (!config.subject || config.context.length < 40) {
+    showError('Add a title and at least a few sentences of context, so the examiner has something real to ask about.')
+    return
+  }
+  cfg = config
+  $('start-btn').disabled = true
+  resetLive()
+
+  try {
+    const [tokenRes, conf] = await Promise.all([fetch('/token'), fetch('/config').then((r) => r.json()).catch(() => ({}))])
+    const body = await tokenRes.json().catch(() => ({}))
+    if (!tokenRes.ok || !body.token) throw new Error(body.error || 'Could not start a session.')
+
+    audio = await openAudio({
+      deviceId: $('mic').value,
+      onChunk: (pcm) => {
+        if (ws?.readyState === 1 && ws.ready) ws.send(JSON.stringify({ type: 'input.audio', audio: toBase64(pcm) }))
+      },
+      onMicLevel: (l) => (micLevel = l),
+      onSpeakerLevel: (l) => (speakerLevel = l),
+      onPlaying: (playing) => {
+        agentPlaying = playing
+        if (!playing) metrics.agentFinished()
+        if (!playing && !ending) setStatus('listening')
+      },
+    })
+    listMics()
+
+    const url = new URL(conf.wsUrl || 'wss://agents.assemblyai.com/v1/ws')
+    url.searchParams.set('token', body.token)
+    ws = new WebSocket(url)
+    ws.ready = false
+    queue = new ToolResultQueue((m) => ws?.readyState === 1 && ws.send(JSON.stringify(m)))
+    ws.onopen = () => ws.send(JSON.stringify(buildSessionUpdate(cfg)))
+    ws.onmessage = (e) => handle(JSON.parse(e.data))
+    ws.onclose = () => { if (!finished) finalize() }
+    ws.onerror = () => setStatus('error', 'Connection problem')
+
+    setView('live')
+    setStatus('connecting')
+  } catch (err) {
+    teardown()
+    setView('setup')
+    const msg = err?.name === 'NotAllowedError' ? 'Microphone permission was blocked. Allow it in your browser and try again.' : err.message
+    showError(msg)
+  } finally {
+    $('start-btn').disabled = false
+  }
+}
+
+function handle(msg) {
+  queue.onEvent(msg)
+  switch (msg.type) {
+    case 'session.ready':
+      ws.ready = true
+      startedAt = Date.now()
+      timer = setInterval(tick, 1000)
+      tick()
+      setStatus('listening')
+      break
+    case 'input.speech.started':
+      audio?.flush() // barge-in: stop the examiner mid-word
+      metrics.speechStarted()
+      setStatus('listening')
+      break
+    case 'input.speech.stopped':
+      metrics.speechStopped()
+      setStatus('thinking')
+      break
+    case 'transcript.user.delta':
+      partial('you', msg.text)
+      break
+    case 'transcript.user': {
+      const turn = metrics.userTurn(msg.text)
+      addLine('you', msg.text)
+      if (turn) updateMetrics()
+      break
+    }
+    case 'reply.started':
+      setStatus('speaking')
+      break
+    case 'reply.audio':
+      audio?.play(fromBase64(msg.data))
+      break
+    case 'transcript.agent.delta':
+      partial('examiner', ((partials.examiner?.text || '') + ' ' + (msg.delta || '')).replace(/\s+/g, ' ').trimStart())
+      break
+    case 'transcript.agent':
+      addLine('examiner', msg.text + (msg.interrupted ? ' —' : ''))
+      break
+    case 'reply.done':
+      if (msg.status === 'interrupted') audio?.flush()
+      if (ending && report) scheduleEnd()
+      break
+    case 'tool.call':
+      onTool(msg)
+      break
+    case 'session.error':
+      console.warn('session.error', msg)
+      setStatus('error', msg.message || msg.code)
+      break
+    case 'session.ended':
+      finalize()
+      break
+  }
+}
+
+function onTool({ call_id, name, arguments: raw }) {
+  let args = raw
+  if (typeof raw === 'string') { try { args = JSON.parse(raw) } catch { args = {} } }
+  args ||= {}
+  if (name === 'show_question') {
+    showQuestion(args)
+    queue.add(call_id, { shown: true })
+  } else if (name === 'record_score') {
+    const known = MODES[cfg.mode].rubric.some((r) => r.id === args.criterion)
+    const score = Math.round(Number(args.score))
+    if (!known || !(score >= 1 && score <= 5)) {
+      queue.add(call_id, { error: `criterion must be one of ${MODES[cfg.mode].rubric.map((r) => r.id).join(', ')} and score 1-5. Nothing was recorded; call again with valid values.` })
+      return
+    }
+    recordScore({ ...args, score })
+    queue.add(call_id, { recorded: true, answers_scored: scores.length })
+  } else if (name === 'finish_session') {
+    report = args
+    ending = true
+    queue.add(call_id, { report_shown: true, instruction: 'Do not say anything else.' })
+    scheduleEnd()
+  } else {
+    queue.add(call_id, { error: `unknown tool ${name}` })
+  }
+}
+
+// Let the goodbye finish playing before hanging up.
+let endTimer = null
+function scheduleEnd() {
+  clearTimeout(endTimer)
+  const wait = () => (agentPlaying ? (endTimer = setTimeout(wait, 300)) : (endTimer = setTimeout(hangUp, 900)))
+  wait()
+}
+
+function hangUp() {
+  if (ws?.readyState === 1) {
+    ws.send(JSON.stringify({ type: 'session.end' }))
+    const s = ws
+    setTimeout(() => s.readyState === 1 && s.close(), 2000)
+  }
+  finalize()
+}
+
+// End button: ask the examiner to wrap up properly, fall back after 20 s.
+$('end-btn').onclick = () => {
+  if (ending) return hangUp()
+  ending = true
+  $('end-btn').textContent = 'Finish now'
+  setStatus('thinking', 'wrapping up')
+  if (ws?.readyState === 1 && ws.ready) {
+    ws.send(JSON.stringify({
+      type: 'reply.create',
+      instructions: 'The candidate has asked to end the session now. Do not ask another question. Give your two sentence spoken summary, say goodbye, then call finish_session with your assessment of what you heard.',
+    }))
+    endTimer = setTimeout(hangUp, 20000)
+  } else hangUp()
+}
+
+function finalize() {
+  if (finished) return
+  finished = true
+  clearTimeout(endTimer)
+  teardown()
+  renderReport()
+  setView('report')
+}
+
+function teardown() {
+  clearInterval(timer)
+  try { audio?.close() } catch {}
+  audio = null
+  if (ws && ws.readyState <= 1) { try { ws.close() } catch {} }
+}
+
+function resetLive() {
+  ending = finished = false
+  report = null
+  scores = []
+  questionsAsked = []
+  transcript.length = 0
+  metrics = new DeliveryMetrics()
+  $('transcript').replaceChildren()
+  $('feed').innerHTML = '<li class="empty">Private notes appear here after each answer.</li>'
+  $('q-num').textContent = 'Waiting for the first question'
+  $('q-topic').hidden = true
+  $('q-text').textContent = 'The examiner will introduce themselves first.'
+  $('end-btn').textContent = 'End session'
+  $('elapsed').textContent = '0:00'
+  renderRubric()
+  updateMetrics()
+}
+
+// ---------------------------------------------------------------- live UI
+function setView(v) {
+  document.body.dataset.view = v
+  window.scrollTo({ top: 0 })
+}
+
+function setStatus(state, text) {
+  const el = $('status')
+  el.className = 'live-only status ' + state
+  const labels = { listening: 'your turn', speaking: 'examiner speaking', thinking: 'examiner thinking', connecting: 'connecting' }
+  $('status-text').textContent = text || labels[state] || state
+  $('orb-label').textContent = text || labels[state] || state
+}
+
+function tick() {
+  const s = Math.floor((Date.now() - startedAt) / 1000)
+  $('elapsed').textContent = `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`
+}
+
+function showQuestion({ number, topic, question, follow_up }) {
+  const card = $('question-card')
+  $('q-num').textContent = follow_up ? `Question ${number} · follow-up` : `Question ${number} of ${cfg.questions}`
+  $('q-topic').hidden = !topic
+  $('q-topic').textContent = topic || ''
+  $('q-topic').classList.toggle('fu', Boolean(follow_up))
+  $('q-text').textContent = question || ''
+  card.animate([{ opacity: 0.4, transform: 'translateY(4px)' }, { opacity: 1, transform: 'none' }], { duration: 300, easing: 'ease-out' })
+  questionsAsked.push({ number, topic, question, follow_up: Boolean(follow_up) })
+}
+
+function criterionStats() {
+  return MODES[cfg.mode].rubric.map((r) => {
+    const s = scores.filter((x) => x.criterion === r.id)
+    const avg = s.length ? s.reduce((a, b) => a + b.score, 0) / s.length : null
+    return { ...r, avg, n: s.length, items: s }
+  })
+}
+
+function renderRubric(flashId) {
+  if (!cfg) return
+  const ul = $('rubric')
+  ul.replaceChildren()
+  for (const c of criterionStats()) {
+    const li = document.createElement('li')
+    if (c.id === flashId) li.className = 'flash'
+    const cls = c.avg == null ? '' : c.avg < 2.5 ? 'lo' : c.avg < 3.75 ? 'mid' : 'hi'
+    li.innerHTML = `<div class="top"><span></span><span class="val"></span></div><div class="bar"><i class="${cls}"></i></div>`
+    li.querySelector('.top span').textContent = c.name
+    li.querySelector('.val').textContent = c.avg == null ? '–' : `${c.avg.toFixed(1)} / 5`
+    li.title = c.hint
+    ul.append(li)
+    requestAnimationFrame(() => (li.querySelector('i').style.width = c.avg == null ? '0' : `${(c.avg / 5) * 100}%`))
+  }
+  $('scored-count').textContent = `${scores.length} scored`
+}
+
+function recordScore(s) {
+  scores.push({ ...s, at: Date.now() })
+  renderRubric(s.criterion)
+  const feed = $('feed')
+  feed.querySelector('.empty')?.remove()
+  const li = document.createElement('li')
+  const name = MODES[cfg.mode].rubric.find((r) => r.id === s.criterion)?.name || s.criterion
+  li.innerHTML = '<div class="crit"><span></span><span></span></div><div class="ev"></div><div class="tip"></div>'
+  li.querySelector('.crit span').textContent = name
+  li.querySelector('.crit span:last-child').textContent = '●'.repeat(s.score) + '○'.repeat(5 - s.score)
+  li.querySelector('.ev').textContent = s.evidence || ''
+  li.querySelector('.tip').textContent = s.tip ? `→ ${s.tip}` : ''
+  feed.prepend(li)
+}
+
+function updateMetrics() {
+  const m = metrics.summary()
+  $('m-wpm').textContent = m.wpm ?? '–'
+  $('m-fill').textContent = m.fillerTotal
+  $('m-think').textContent = m.avgThinkSec ?? '–'
+}
+
+// Transcript with live partials and highlighted filler words.
+const partials = {}
+function lineEl(who, text, isPartial) {
+  const div = document.createElement('div')
+  div.className = `line ${who}${isPartial ? ' partial' : ''}`
+  const w = document.createElement('span')
+  w.className = 'who'
+  w.textContent = who === 'you' ? (cfg?.name || 'You') : 'Examiner'
+  const said = document.createElement('span')
+  said.className = 'said'
+  if (who === 'you' && !isPartial) highlightFillers(said, text)
+  else said.textContent = text
+  div.append(w, said)
+  return div
+}
+
+function highlightFillers(el, text) {
+  const fillers = Object.keys(countFillers(text))
+  if (!fillers.length) { el.textContent = text; return }
+  const re = new RegExp(`\\b(${fillers.map((f) => f.replace(/ /g, '\\s')).join('|')})\\b`, 'gi')
+  let last = 0
+  for (const m of text.matchAll(re)) {
+    el.append(text.slice(last, m.index))
+    const mark = document.createElement('mark')
+    mark.textContent = m[0]
+    el.append(mark)
+    last = m.index + m[0].length
+  }
+  el.append(text.slice(last))
+}
+
+function partial(who, text) {
+  const box = $('transcript')
+  if (partials[who]) {
+    partials[who].text = text
+    partials[who].el.querySelector('.said').textContent = text
+  } else {
+    const el = lineEl(who, text, true)
+    partials[who] = { el, text }
+    box.append(el)
+  }
+  box.scrollTop = box.scrollHeight
+}
+
+function addLine(who, text) {
+  if (!text) return
+  partials[who]?.el.remove()
+  delete partials[who]
+  transcript.push({ who, text })
+  const box = $('transcript')
+  box.append(lineEl(who, text))
+  box.scrollTop = box.scrollHeight
+}
+
+// ---------------------------------------------------------------- orb
+const orb = $('orb')
+const g = orb.getContext('2d')
+let phase = 0
+let smoothMic = 0
+let smoothSpk = 0
+function drawOrb() {
+  requestAnimationFrame(drawOrb)
+  if (document.body.dataset.view !== 'live') return
+  const css = getComputedStyle(document.documentElement)
+  const accent = css.getPropertyValue('--accent').trim() || '#4f3bd6'
+  const good = css.getPropertyValue('--good').trim() || '#1f7a45'
+  smoothMic += (Math.min(1, micLevel * 6) - smoothMic) * 0.2
+  smoothSpk += (Math.min(1, speakerLevel * 5) - smoothSpk) * 0.2
+  phase += 0.02
+  const W = orb.width, H = orb.height, cx = W / 2, cy = H / 2
+  g.clearRect(0, 0, W, H)
+  const base = 78 + smoothSpk * 26
+  for (let k = 3; k >= 0; k--) {
+    g.beginPath()
+    for (let a = 0; a <= Math.PI * 2 + 0.01; a += Math.PI / 60) {
+      const wob = Math.sin(a * 3 + phase * (1 + k * 0.3)) * (4 + smoothSpk * 14) + Math.cos(a * 5 - phase) * (2 + smoothSpk * 6)
+      const r = base + k * 10 + wob
+      const x = cx + Math.cos(a) * r, y = cy + Math.sin(a) * r
+      a === 0 ? g.moveTo(x, y) : g.lineTo(x, y)
+    }
+    g.globalAlpha = k === 0 ? 0.95 : 0.12
+    g.fillStyle = accent
+    g.fill()
+  }
+  // Mic ring: shows the candidate is being heard.
+  g.globalAlpha = 0.25 + smoothMic * 0.75
+  g.strokeStyle = good
+  g.lineWidth = 3 + smoothMic * 6
+  g.beginPath()
+  g.arc(cx, cy, 136, 0, Math.PI * 2)
+  g.stroke()
+  g.globalAlpha = 1
+}
+drawOrb()
+
+// ---------------------------------------------------------------- report
+function fill(id, items, empty = 'Nothing noted.') {
+  const el = $(id)
+  el.replaceChildren()
+  for (const t of items?.length ? items : [empty]) {
+    const li = document.createElement('li')
+    li.textContent = t
+    el.append(li)
+  }
+}
+
+function renderReport() {
+  if (!cfg) return
+  const stats = criterionStats()
+  const r = report || fallbackReport(stats, cfg.mode)
+  const overall = Math.max(0, Math.min(100, Math.round(Number(r.overall) || 0)))
+  $('overall').textContent = overall
+  requestAnimationFrame(() => ($('ring-fg').style.strokeDashoffset = String(326.7 * (1 - overall / 100))))
+  $('r-kind').textContent = `${MODES[cfg.mode].label} report`
+  $('r-verdict').textContent = r.verdict || 'Report'
+  const mins = startedAt ? Math.max(1, Math.round((Date.now() - startedAt) / 60000)) : 0
+  $('r-sub').textContent = `${cfg.subject} · ${cfg.name || 'Candidate'} · ${mins} min · ${scores.length} answers scored${r.fallback ? ' · summary built from live scores' : ''}`
+  fill('r-strengths', r.strengths)
+  fill('r-improve', r.improvements)
+  fill('r-practice', r.practice_questions, 'Re-run the session and ask for a strict examiner.')
+
+  const tb = $('r-rubric')
+  tb.replaceChildren()
+  for (const c of stats) {
+    const tr = document.createElement('tr')
+    tr.innerHTML = '<td><b></b><small></small></td><td></td>'
+    tr.querySelector('b').textContent = c.name
+    tr.querySelector('small').textContent = c.items.at(-1)?.tip || c.hint
+    tr.lastChild.textContent = c.avg == null ? 'not assessed' : `${c.avg.toFixed(1)} / 5`
+    tb.append(tr)
+  }
+
+  const m = metrics.summary()
+  const rows = [
+    ['Speaking pace', m.wpm ? `${m.wpm} wpm` : '–', paceLabel(m.wpm)],
+    ['Filler words', `${m.fillerTotal} (${m.fillersPer100} per 100 words)`, m.topFillers.map(([k, v]) => `"${k}" ×${v}`).join(', ') || 'Clean'],
+    ['Average thinking time', m.avgThinkSec != null ? `${m.avgThinkSec}s` : '–', m.avgThinkSec == null ? '' : m.avgThinkSec > 4 ? 'Long pauses; try a holding phrase' : 'Comfortable'],
+    ['Answers given', String(m.answers), `${m.words} words total`],
+  ]
+  const d = $('r-delivery')
+  d.replaceChildren()
+  for (const [k, v, note] of rows) {
+    const div = document.createElement('div')
+    div.innerHTML = '<span><span></span><br><small class="muted"></small></span><b></b>'
+    div.querySelector('span span').textContent = k
+    div.querySelector('small').textContent = note
+    div.querySelector('b').textContent = v
+    d.append(div)
+  }
+
+  const t = $('r-transcript')
+  t.replaceChildren(...transcript.map((l) => lineEl(l.who, l.text)))
+  window.__vvReport = { report: r, overall, scores, metrics: m }
+}
+
+function reportMarkdown() {
+  const r = window.__vvReport
+  const stats = criterionStats()
+  const lines = [
+    `# VivaVoice ${MODES[cfg.mode].label.toLowerCase()} report`,
+    '',
+    `**${cfg.subject}**, ${cfg.name || 'Candidate'}, ${new Date().toLocaleString()}`,
+    '',
+    `## ${r.overall}/100 · ${r.report.verdict}`,
+    '',
+    '## Strengths', ...(r.report.strengths || []).map((s) => `- ${s}`), '',
+    '## Work on next', ...(r.report.improvements || []).map((s, i) => `${i + 1}. ${s}`), '',
+    '## Rubric', '| Criterion | Score | Latest note |', '|---|---|---|',
+    ...stats.map((c) => `| ${c.name} | ${c.avg == null ? '–' : c.avg.toFixed(1) + '/5'} | ${(c.items.at(-1)?.tip || '').replace(/\|/g, '/')} |`), '',
+    '## Delivery',
+    `- Pace: ${r.metrics.wpm ?? '–'} wpm (${paceLabel(r.metrics.wpm)})`,
+    `- Filler words: ${r.metrics.fillerTotal} (${r.metrics.fillersPer100} per 100 words)`,
+    `- Average thinking time: ${r.metrics.avgThinkSec ?? '–'}s`, '',
+    '## Practice questions', ...(r.report.practice_questions || []).map((s) => `- ${s}`), '',
+    '## Transcript', ...transcript.map((l) => `**${l.who === 'you' ? cfg.name || 'You' : 'Examiner'}:** ${l.text}  `),
+  ]
+  return lines.join('\n')
+}
+
+$('dl-btn').onclick = () => {
+  const blob = new Blob([reportMarkdown()], { type: 'text/markdown' })
+  const a = document.createElement('a')
+  a.href = URL.createObjectURL(blob)
+  a.download = `vivavoice-report-${new Date().toISOString().slice(0, 10)}.md`
+  a.click()
+  setTimeout(() => URL.revokeObjectURL(a.href), 1000)
+}
+$('print-btn').onclick = () => {
+  document.querySelector('#view-report details')?.setAttribute('open', '')
+  window.print()
+}
+$('again-btn').onclick = () => setView('setup')
+
+// Test hook: lets the automated UI test drive the page without a microphone.
+window.__vv = {
+  handle: (m) => handle(m),
+  mock: (send) => { queue = new ToolResultQueue(send); metrics = new DeliveryMetrics(); startedAt = Date.now() }, get cfg() { return cfg }, set cfg(v) { cfg = v }, resetLive, setView, finalize }

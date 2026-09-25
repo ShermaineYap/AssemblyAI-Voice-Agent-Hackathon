@@ -1,0 +1,15 @@
+services:
+  - type: web
+    name: vivavoice
+    runtime: node
+    plan: free
+    buildCommand: "true"
+    startCommand: node server.mjs
+    healthCheckPath: /health
+    envVars:
+      - key: ASSEMBLYAI_API_KEY
+        sync: false
+      - key: TOKENS_PER_HOUR
+        value: "20"
+      - key: MAX_SESSION_SECONDS
+        value: "1200"

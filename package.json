@@ -1,0 +1,13 @@
+{
+  "name": "vivavoice",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Rehearse your viva or job interview out loud with a voice examiner that scores you live. Built on the AssemblyAI Voice Agent API.",
+  "license": "MIT",
+  "engines": { "node": ">=18" },
+  "scripts": {
+    "start": "node server.mjs",
+    "test": "node --test test/*.test.mjs"
+  }
+}
