@@ -343,3 +343,15 @@ details summary::-webkit-details-marker { display: none; }
   details { display: block; } details > * { display: block; }
   #radar .shape, .ring-fg { filter: none; }
 }
+
+/* phone-in */
+.start-group { display: flex; gap: 10px; flex-wrap: wrap; }
+body[data-mode="phone"] .orb-wrap, body[data-mode="phone"] .orb-label, body[data-mode="phone"] .captions, body[data-mode="phone"] .drawer, body[data-mode="phone"] .stats-card { display: none !important; }
+.phone-panel { width: 100%; max-width: 780px; text-align: center; padding: 30px; display: grid; gap: 18px; background: linear-gradient(135deg, rgba(109,92,255,.18), rgba(77,232,176,.08) 70%), var(--surface); }
+.phone-steps { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
+.phone-steps > div { display: grid; gap: 10px; justify-items: center; padding: 18px; border-radius: 16px; background: var(--surface-2); border: 1px solid var(--border); }
+.phone-number { font: 400 clamp(26px, 3vw, 36px)/1.1 var(--serif); color: var(--text-strong); text-decoration: none; }
+.phone-code { font: 500 clamp(40px, 5vw, 56px)/1 var(--mono); letter-spacing: .3em; white-space: nowrap; color: var(--accent); text-shadow: 0 0 24px rgba(141,124,255,.5); padding-left: .2em; }
+.phone-status { display: inline-flex; gap: 8px; align-items: center; justify-self: center; font: 500 12px var(--mono); text-transform: uppercase; letter-spacing: .1em; color: var(--state); padding: 6px 14px; border-radius: 99px; background: color-mix(in srgb, var(--state) 12%, transparent); }
+.phone-status .dot { width: 7px; height: 7px; border-radius: 50%; background: currentColor; animation: pulse 1.4s infinite; }
+@media (max-width: 640px) { .phone-steps { grid-template-columns: 1fr; } .start-group, .start-group .btn { width: 100%; } }
