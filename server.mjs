@@ -13,6 +13,7 @@ import { readFile, stat } from 'node:fs/promises'
 import { readFileSync } from 'node:fs'
 import { extname, join, normalize } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { createPhoneStore, publicState, runTool, secretMatches } from './phone.mjs'
 
 const ROOT = fileURLToPath(new URL('.', import.meta.url))
 const PUBLIC = join(ROOT, 'public')
@@ -99,11 +100,28 @@ function send(res, status, body, type = 'application/json') {
   res.end(typeof body === 'string' ? body : JSON.stringify(body))
 }
 
-export function createServer({ limiter = createLimiter({ limit: Number(process.env.TOKENS_PER_HOUR) || 20 }), tokenFn = mintToken } = {}) {
+async function readJson(req, max = 32_000) {
+  let size = 0
+  const chunks = []
+  for await (const c of req) {
+    size += c.length
+    if (size > max) throw Object.assign(new Error('body too large'), { status: 413 })
+    chunks.push(c)
+  }
+  if (!chunks.length) return {}
+  try { return JSON.parse(Buffer.concat(chunks).toString('utf8')) } catch { throw Object.assign(new Error('invalid JSON'), { status: 400 }) }
+}
+
+const clientIp = (req) => {
+  const xff = String(req.headers['x-forwarded-for'] || '').split(',').map((s) => s.trim()).filter(Boolean)
+  return (process.env.TRUST_PROXY && xff.at(-1)) || req.socket.remoteAddress
+}
+
+export function createServer({ limiter = createLimiter({ limit: Number(process.env.TOKENS_PER_HOUR) || 20 }), tokenFn = mintToken, phone = createPhoneStore() } = {}) {
   return http.createServer(async (req, res) => {
     try { await route(req, res) } catch (error) {
-      console.error(error)
-      if (!res.headersSent) send(res, 500, { error: 'server error' })
+      if (!error.status) console.error(error)
+      if (!res.headersSent) send(res, error.status || 500, { error: error.status ? error.message : 'server error' })
     }
   })
   async function route(req, res) {
@@ -112,7 +130,39 @@ export function createServer({ limiter = createLimiter({ limit: Number(process.e
     if (path === '/health') return send(res, 200, { ok: true, key: Boolean(process.env.ASSEMBLYAI_API_KEY) })
 
     // Lets a regional deployment (or the test suite) point the browser at another socket.
-    if (path === '/config') return send(res, 200, { wsUrl: process.env.AGENTS_WS_URL || 'wss://agents.assemblyai.com/v1/ws', maxSessionSeconds: Number(process.env.MAX_SESSION_SECONDS) || 1800 })
+    if (path === '/config') {
+      return send(res, 200, {
+        wsUrl: process.env.AGENTS_WS_URL || 'wss://agents.assemblyai.com/v1/ws',
+        maxSessionSeconds: Number(process.env.MAX_SESSION_SECONDS) || 1800,
+        // Shown only when the phone examiner is set up (npm run phone).
+        phoneNumber: process.env.PHONE_TOOL_SECRET ? process.env.PHONE_NUMBER || process.env.TWILIO_PHONE_NUMBER || null : null,
+      })
+    }
+
+    // ---- phone-in: the student's browser creates a session and watches it
+    if (path === '/api/phone/session' && req.method === 'POST') {
+      if (!process.env.PHONE_TOOL_SECRET) return send(res, 404, { error: 'Phone practice is not set up on this server.' })
+      if (!limiter(clientIp(req))) return send(res, 429, { error: 'Too many sessions from this address. Try again later.' })
+      const s = phone.create(await readJson(req))
+      if (!s) return send(res, 503, { error: 'Too many active phone sessions. Try again shortly.' })
+      return send(res, 200, { code: s.code, key: s.key })
+    }
+    const watch = path.match(/^\/api\/phone\/session\/(\d{4})$/)
+    if (watch && req.method === 'GET') {
+      const s = phone.get(watch[1])
+      const key = new URL(req.url, 'http://x').searchParams.get('key')
+      if (!s || !secretMatches(key, s.key)) return send(res, 404, { error: 'No such session' })
+      return send(res, 200, publicState(s))
+    }
+
+    // ---- phone-in: HTTP tools that AssemblyAI calls during the phone call
+    const tool = path.match(/^\/api\/tools\/([a-z_]+)$/)
+    if (tool) {
+      if (req.method !== 'POST') return send(res, 405, { error: 'POST only' })
+      if (!secretMatches(req.headers['x-vivavoice-secret'], process.env.PHONE_TOOL_SECRET)) return send(res, 401, { error: 'unauthorised' })
+      const r = runTool(phone, tool[1], await readJson(req))
+      return send(res, r.status, r.body)
+    }
 
     if (path === '/token') {
       if (req.method !== 'GET') return send(res, 405, { error: 'GET only' })
