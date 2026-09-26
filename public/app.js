@@ -39,6 +39,12 @@ let rambleTimer = null
 let rambleWarned = false
 let answerStartIdx = 0 // transcript index where the current answer began
 let lastEntry = null
+let sessionId = null
+let sessionEnded = false // got session.ended (a clean close)
+let resumed = false // one resume attempt per session
+let everReady = false // got session.ready at least once
+let capTimer = null
+let wsConf = {}
 
 // ---------------------------------------------------------------- setup form
 function readForm() {
@@ -214,10 +220,8 @@ async function start(config) {
   resetLive()
 
   try {
-    const [tokenRes, conf] = await Promise.all([fetch('/token'), fetch('/config').then((r) => r.json()).catch(() => ({}))])
-    const body = await tokenRes.json().catch(() => ({}))
-    if (!tokenRes.ok || !body.token) throw new Error(body.error || 'Could not start a session.')
-
+    // Audio first: Safari needs the AudioContext created inside the click,
+    // and the mic prompt can take longer than the token's 60 s window.
     audio = await openAudio({
       deviceId: $('mic').value,
       onChunk: (pcm) => {
@@ -233,15 +237,9 @@ async function start(config) {
     })
     listMics()
 
-    const url = new URL(conf.wsUrl || 'wss://agents.assemblyai.com/v1/ws')
-    url.searchParams.set('token', body.token)
-    ws = new WebSocket(url)
-    ws.ready = false
+    wsConf = await fetch('/config').then((r) => r.json()).catch(() => ({}))
     queue = new ToolResultQueue((m) => ws?.readyState === 1 && ws.send(JSON.stringify(m)))
-    ws.onopen = () => ws.send(JSON.stringify(buildSessionUpdate(cfg)))
-    ws.onmessage = (e) => handle(JSON.parse(e.data))
-    ws.onclose = () => { if (!finished) finalize() }
-    ws.onerror = () => setStatus('error', 'Connection problem')
+    await connect(buildSessionUpdate(cfg))
 
     setView('live')
     setStatus('connecting')
@@ -255,11 +253,60 @@ async function start(config) {
   }
 }
 
+// Opens the socket with a fresh token. `first` is the first message: the full
+// session.update, or session.resume after a network drop.
+async function connect(first) {
+  const tokenRes = await fetch('/token')
+  const body = await tokenRes.json().catch(() => ({}))
+  if (!tokenRes.ok || !body.token) throw new Error(body.error || 'Could not start a session.')
+  const url = new URL(wsConf.wsUrl || 'wss://agents.assemblyai.com/v1/ws')
+  url.searchParams.set('token', body.token)
+  const sock = new WebSocket(url)
+  ws = sock
+  ws.ready = false
+  // Handlers check they still belong to the current socket, so a late close
+  // from a previous session can't end the next one.
+  sock.onopen = () => sock.send(JSON.stringify(first))
+  sock.onmessage = (e) => { if (ws === sock) handle(JSON.parse(e.data)) }
+  sock.onerror = () => { if (ws === sock) setStatus('error', 'Connection problem') }
+  sock.onclose = () => {
+    if (ws !== sock || finished) return
+    // Closed without session.ended = a network drop. AssemblyAI keeps the
+    // session for 30 s, so resume it once instead of losing the viva.
+    if (sock.ready && sessionId && !sessionEnded && !ending && !resumed) {
+      resumed = true
+      setStatus('connecting', 'reconnecting')
+      connect({ type: 'session.resume', session_id: sessionId }).catch(() => finalize())
+      return
+    }
+    finalize()
+  }
+}
+
+// AssemblyAI ends a session at max_session_duration_seconds with no warning,
+// so wrap up a minute before the cap.
+function armSessionCap() {
+  clearTimeout(capTimer)
+  const cap = Number(wsConf.maxSessionSeconds) || 1800
+  capTimer = setTimeout(() => {
+    if (finished || ending) return
+    ending = true
+    ws?.readyState === 1 && ws.send(JSON.stringify({
+      type: 'reply.create',
+      instructions: 'Time is almost up. Do not ask another question. Give your two sentence spoken summary, say goodbye, then call finish_session.',
+    }))
+  }, Math.max(30, cap - 60) * 1000)
+}
+
 function handle(msg) {
   queue.onEvent(msg)
   switch (msg.type) {
     case 'session.ready':
       ws.ready = true
+      everReady = true
+      if (sessionId && msg.session_id === sessionId) { setStatus('listening'); break } // resumed
+      sessionId = msg.session_id || null
+      armSessionCap()
       startedAt = Date.now()
       timer = setInterval(tick, 1000)
       tick()
@@ -267,7 +314,8 @@ function handle(msg) {
       setStatus('listening')
       break
     case 'input.speech.started':
-      audio?.flush() // barge-in: stop the examiner mid-word
+      // Barge-in is confirmed by the server (reply.done status interrupted),
+      // where playback is flushed; flushing here on every VAD blip skips words.
       metrics.speechStarted()
       setStatus('listening')
       startRambleClock()
@@ -301,7 +349,10 @@ function handle(msg) {
       addLine('examiner', msg.text + (msg.interrupted ? ' —' : ''))
       break
     case 'reply.done':
-      if (msg.status === 'interrupted') audio?.flush()
+      if (msg.status === 'interrupted') {
+        audio?.flush()
+        if (metrics._speechStart != null) startRambleClock()
+      }
       if (ending && report) scheduleEnd()
       break
     case 'tool.call':
@@ -312,6 +363,7 @@ function handle(msg) {
       setStatus('error', msg.message || msg.code)
       break
     case 'session.ended':
+      sessionEnded = true
       finalize()
       break
   }
@@ -369,7 +421,7 @@ function onTool({ call_id, name, arguments: raw }) {
     const known = MODES[cfg.mode].rubric.some((r) => r.id === args.criterion)
     const score = Math.round(Number(args.score))
     if (!known || !(score >= 1 && score <= 5)) {
-      queue.add(call_id, { error: `criterion must be one of ${MODES[cfg.mode].rubric.map((r) => r.id).join(', ')} and score 1-5. Nothing was recorded; call again with valid values.` })
+      queue.add(call_id, { error: `criterion must be one of ${MODES[cfg.mode].rubric.map((r) => r.id).join(', ')} and score 1-5. Nothing was recorded; call again with valid values.` }, true)
       return
     }
     recordScore({ ...args, score })
@@ -380,7 +432,7 @@ function onTool({ call_id, name, arguments: raw }) {
     queue.add(call_id, { report_shown: true, instruction: 'Do not say anything else.' })
     scheduleEnd()
   } else {
-    queue.add(call_id, { error: `unknown tool ${name}` })
+    queue.add(call_id, { error: `unknown tool ${name}` }, true)
   }
 }
 
@@ -420,7 +472,16 @@ function finalize() {
   if (finished) return
   finished = true
   clearTimeout(endTimer)
+  const connected = everReady
+  const lastError = $('status').classList.contains('error') ? $('status-text').textContent : ''
   teardown()
+  if (!connected) {
+    setView('setup')
+    showError(lastError && lastError !== 'Connection problem'
+      ? `The session could not start: ${lastError}`
+      : 'Could not connect to the examiner. Check the server is running with a valid ASSEMBLYAI_API_KEY, then try again.')
+    return
+  }
   renderReport()
   setView('report')
 }
@@ -439,6 +500,8 @@ function saveToHistory(overall, m) {
 
 function teardown() {
   clearInterval(timer)
+  clearTimeout(capTimer)
+  stopRambleClock()
   try { audio?.close() } catch {}
   audio = null
   if (ws && ws.readyState <= 1) { try { ws.close() } catch {} }
@@ -449,6 +512,8 @@ function resetLive() {
   answerStartIdx = 0
   lastEntry = null
   ending = finished = false
+  sessionId = null
+  sessionEnded = resumed = everReady = false
   report = null
   scores = []
   questionsAsked = []
@@ -461,6 +526,14 @@ function resetLive() {
   $('q-text').textContent = 'The examiner will introduce themselves first.'
   $('end-btn').textContent = 'End session'
   $('elapsed').textContent = '0:00'
+  for (const k of Object.keys(partials)) delete partials[k]
+  $('cap-examiner').textContent = ''
+  $('cap-you').textContent = ''
+  $('stepper').replaceChildren()
+  newReply = false
+  repliedSinceYou = true
+  agentPlaying = false
+  micLevel = speakerLevel = 0
   renderRubric()
   updateMetrics()
 }
@@ -705,7 +778,8 @@ function drawRadar(svg, stats) {
 function fill(id, items, empty = 'Nothing noted.') {
   const el = $(id)
   el.replaceChildren()
-  for (const t of items?.length ? items : [empty]) {
+  const list = Array.isArray(items) ? items.map(String).filter(Boolean) : items ? [String(items)] : []
+  for (const t of list.length ? list : [empty]) {
     const li = document.createElement('li')
     li.textContent = t
     el.append(li)
@@ -782,7 +856,7 @@ function renderReport() {
   }
 
   // Change since last time, saved once per session.
-  const cmp = finished && !lastEntry ? saveToHistory(overall, m) : null
+  const cmp = finished && !lastEntry && scores.length ? saveToHistory(overall, m) : null
   const dl = $('r-delta')
   if (cmp) {
     dl.hidden = false
@@ -795,8 +869,17 @@ function renderReport() {
 
 // The candidate's lines between when a question was shown and the next one.
 function answerTo(question) {
-  const i = questionsAsked.findIndex((q) => q.question === question)
-  if (i < 0) return ''
+  const norm = (t) => new Set(String(t || '').toLowerCase().replace(/[^a-z0-9\s]/g, ' ').split(/\s+/).filter((w) => w.length > 3))
+  const target = norm(question)
+  let i = -1, best = 0
+  questionsAsked.forEach((q, idx) => {
+    const words = norm(q.question)
+    let hit = 0
+    for (const w of target) if (words.has(w)) hit++
+    const score = hit / Math.max(1, Math.min(target.size, words.size))
+    if (score > best) { best = score; i = idx }
+  })
+  if (i < 0 || best < 0.4) return ''
   const from = questionsAsked[i].at ?? 0
   const to = questionsAsked[i + 1]?.at ?? transcript.length
   return transcript.slice(from, to).filter((l) => l.who === 'you').map((l) => l.text).join(' ')
