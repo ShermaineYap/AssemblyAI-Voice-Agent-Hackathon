@@ -72,13 +72,17 @@ sequenceDiagram
 |---|---|
 | Inline `session.update` | System prompt is generated per session from the student's abstract, mode, persona and question count |
 | `input.keyterms` | Up to 100 technical terms pulled from the abstract, to bias STT toward the student's jargon |
-| `input.turn_detection` | "Thinking time" mode: `min_silence` 1600 ms, `max_silence` 4500 ms (vs 800/2500) |
-| Client-side tools | `show_question`, `record_score` (with an enum of rubric ids), `finish_session` (report, weakest question and model answer) |
+| `input.transcription_prompt` | A plain description of the session ("a university viva about LeafLens…") built from the report, so STT has context beyond single terms |
+| `input.continuous_partials` | Steady live captions during long answers |
+| `input.turn_detection` | "Thinking time" mode sets `min_silence` 1600 ms / `max_silence` 4500 ms; otherwise AssemblyAI's adaptive endpointing is left on |
+| Client-side tools | `show_question`, `record_score` (with an enum of rubric ids), `finish_session` (report, weakest question and model answer); `response_instructions` keep scores unspoken, invalid calls return `is_error: true` |
 | Tool timing rules | `tool.result` queued and sent only when `reply.done` is the latest event; dropped on interrupted replies ([toolqueue.js](public/toolqueue.js)) |
 | `reply.create` | "End session" asks the examiner to wrap up and produce the report instead of hanging up cold; the rambling alarm uses it to make the examiner cut in mid-answer |
 | `input.speech.started` / `stopped` | Barge-in (flush playback), plus speaking-time and thinking-time metrics |
 | Temporary tokens | Browser never sees the API key; the server rate-limits token minting per IP |
 | `session.end` | Sent explicitly so the session isn't left open and billing |
+| `session.resume` | If the socket drops without `session.ended`, the app reconnects with a fresh token and resumes the same session inside AssemblyAI's 30 s window, so a Wi-Fi blip doesn't lose the viva |
+| `max_session_duration_seconds` | Capped at 30 min; since the API gives no warning, the examiner is asked to wrap up a minute before the cap |
 
 ## Run it locally
 
@@ -91,7 +95,7 @@ cp .env.example .env        # then put your key in it: ASSEMBLYAI_API_KEY=...
 npm start                   # → http://localhost:3000
 ```
 
-Open the page, click **Fill with a sample** (or drop in your report PDF), then **Start the viva**. Headphones are recommended.
+Open the page, click **Try a sample** (or drop in your report PDF), then **Start the viva**. Headphones are recommended.
 
 Run the tests:
 
@@ -106,9 +110,10 @@ One click on Render: the included [`render.yaml`](render.yaml) asks for `ASSEMBL
 | Variable | Default | Purpose |
 |---|---|---|
 | `ASSEMBLYAI_API_KEY` | required | Stays on the server |
-| `PUBLIC_ORIGIN` | unset | If set, only this origin can mint tokens |
+| `PUBLIC_ORIGIN` | unset | If set, token requests from other origins are refused |
+| `TRUST_PROXY` | unset | Set behind a proxy (Render) so the per-IP limit sees the real client IP |
 | `TOKENS_PER_HOUR` | 20 | Sessions per IP per hour |
-| `MAX_SESSION_SECONDS` | 1200 | Hard cap on a session's length |
+| `MAX_SESSION_SECONDS` | 1800 | Hard cap on a session's length |
 
 ## Project structure
 
