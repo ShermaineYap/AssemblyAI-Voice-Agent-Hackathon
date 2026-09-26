@@ -201,81 +201,6 @@ function renderProgress() {
 }
 renderProgress()
 
-// ---------------------------------------------------------------- phone-in
-// The phone examiner runs on AssemblyAI's side with HTTP tools that call our
-// server; this page shows the code to read out and polls for the live scores.
-let phone = null // { code, key, number, seenQ, seenS, poll }
-let serverConf = {}
-fetch('/config').then((r) => r.json()).then((c) => {
-  serverConf = c || {}
-  $('phone-btn').hidden = !serverConf.phoneNumber
-}).catch(() => {})
-
-$('phone-btn').onclick = async () => {
-  const config = readForm()
-  showError('')
-  if (!config.subject || config.context.length < 40) {
-    showError('Add a title and at least a few sentences of context, so the examiner has something real to ask about.')
-    return
-  }
-  $('phone-btn').disabled = true
-  try {
-    const res = await fetch('/api/phone/session', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(config) })
-    const body = await res.json().catch(() => ({}))
-    if (!res.ok) throw new Error(body.error || 'Could not create a phone session.')
-    cfg = config
-    resetLive()
-    document.body.dataset.mode = 'phone'
-    phone = { code: body.code, key: body.key, seenQ: 0, seenS: 0 }
-    const num = serverConf.phoneNumber
-    $('phone-number').textContent = num
-    $('phone-number').href = `tel:${num.replace(/[^+\d]/g, '')}`
-    $('phone-code').textContent = body.code
-    $('phone-status-text').textContent = 'Waiting for your call…'
-    $('phone-panel').hidden = false
-    buildStepper()
-    setView('live')
-    setStatus('connecting', 'waiting for your call')
-    phone.poll = setInterval(pollPhone, 1500)
-    pollPhone()
-  } catch (err) {
-    showError(err.message)
-  } finally {
-    $('phone-btn').disabled = false
-  }
-}
-
-async function pollPhone() {
-  if (!phone || finished) return
-  let st
-  try {
-    const res = await fetch(`/api/phone/session/${phone.code}?key=${phone.key}`)
-    if (!res.ok) return
-    st = await res.json()
-  } catch { return }
-  if (st.status !== 'waiting' && !everReady) {
-    everReady = true
-    startedAt = Date.now()
-    timer = setInterval(tick, 1000)
-    tick()
-    $('phone-status-text').textContent = 'On the call'
-    setStatus('listening', 'on the call')
-  }
-  for (const q of st.questions.slice(phone.seenQ)) showQuestion(q)
-  phone.seenQ = st.questions.length
-  for (const sc of st.scores.slice(phone.seenS)) recordScore(sc)
-  phone.seenS = st.scores.length
-  if (st.report) {
-    report = st.report
-    finalize()
-  }
-}
-
-function stopPhone() {
-  if (phone?.poll) clearInterval(phone.poll)
-  if (phone) phone.poll = null
-}
-
 // ---------------------------------------------------------------- session
 function showError(msg) {
   const el = $('setup-error')
@@ -530,11 +455,6 @@ function hangUp() {
 
 // End button: ask the examiner to wrap up properly, fall back after 20 s.
 $('end-btn').onclick = () => {
-  if (phone) {
-    // The call itself is ended by hanging up the phone; this stops watching.
-    finalize()
-    return
-  }
   if (ending) return hangUp()
   ending = true
   $('end-btn').textContent = 'Finish now'
@@ -555,12 +475,6 @@ function finalize() {
   const connected = everReady
   const lastError = $('status').classList.contains('error') ? $('status-text').textContent : ''
   teardown()
-  if (!connected && phone) {
-    phone = null
-    setView('setup')
-    showError('The phone call did not start. Call the number and read out the code on screen, then the scores appear here.')
-    return
-  }
   if (!connected) {
     setView('setup')
     showError(lastError && lastError !== 'Connection problem'
@@ -585,7 +499,6 @@ function saveToHistory(overall, m) {
 }
 
 function teardown() {
-  stopPhone()
   clearInterval(timer)
   clearTimeout(capTimer)
   stopRambleClock()
@@ -595,10 +508,6 @@ function teardown() {
 }
 
 function resetLive() {
-  stopPhone()
-  phone = null
-  delete document.body.dataset.mode
-  $('phone-panel').hidden = true
   stopRambleClock()
   answerStartIdx = 0
   lastEntry = null
@@ -633,7 +542,6 @@ function resetLive() {
 function setView(v) {
   document.body.dataset.view = v
   if (v !== 'live') document.body.dataset.state = 'idle'
-  if (v === 'setup') { delete document.body.dataset.mode; $('phone-panel').hidden = true; phone = null }
   window.scrollTo({ top: 0 })
 }
 
@@ -917,11 +825,7 @@ function renderReport() {
   ]
   const d = $('r-delivery')
   d.replaceChildren()
-  if (document.body.dataset.mode === 'phone') {
-    const p = document.createElement('p'); p.className = 'muted'
-    p.textContent = 'Pace, filler words and thinking time are measured in browser sessions. This one was over the phone.'
-    d.append(p)
-  } else for (const [k, v, note] of rows) {
+  for (const [k, v, note] of rows) {
     const div = document.createElement('div')
     div.innerHTML = '<span><span></span><br><small class="muted"></small></span><b></b>'
     div.querySelector('span span').textContent = k
@@ -932,14 +836,13 @@ function renderReport() {
 
   const t = $('r-transcript')
   t.replaceChildren(...transcript.map((l) => lineEl(l.who, l.text)))
-  if (!transcript.length) { const n = document.createElement('p'); n.className = 'muted'; n.textContent = document.body.dataset.mode === 'phone' ? 'Phone sessions show questions and scores here; the transcript stays with the call.' : 'No transcript was captured.'; t.append(n) }
 
   // Weakest question, answered two ways.
   const mc = $('r-model-card')
   if (r.weakest_question && r.model_answer) {
     mc.hidden = false
     $('r-model-q').textContent = r.weakest_question
-    $('r-model-yours').textContent = answerTo(r.weakest_question) || r.your_answer_summary || 'No answer was captured for this question.'
+    $('r-model-yours').textContent = answerTo(r.weakest_question) || 'No answer was captured for this question.'
     $('r-model-answer').textContent = r.model_answer
   } else mc.hidden = true
 

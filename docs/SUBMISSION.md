@@ -34,10 +34,10 @@ The whole app runs on one AssemblyAI Voice Agent API WebSocket. Each session is 
 - Barge-in stops playback mid-word.
 - Tool results follow the API's reply.done timing rules and are dropped for interrupted replies.
 
-Students can also rehearse by phone. The site gives a four-digit code, the student calls the VivaVoice number (a Twilio SIP trunk into an AssemblyAI stored agent) and reads the code out. The phone examiner then loads their material and scores them through HTTP tools that AssemblyAI calls on the VivaVoice server, so the rubric fills in live on the laptop while they talk on the phone. It also sends a plain-language transcription_prompt describing the session, keeps continuous partials on for long answers, resumes the session automatically after a network drop, and wraps up before the session cap. A zero-dependency Node server mints short-lived tokens with per-IP rate limiting, so the API key never reaches the browser. The code is MIT licensed and has 48 automated tests.
+It also sends a plain-language transcription_prompt describing the session, keeps continuous partials on for long answers, resumes the session automatically after a network drop, and wraps up before the session cap. A zero-dependency Node server mints short-lived tokens with per-IP rate limiting, so the API key never reaches the browser. The code is MIT licensed and has 42 automated tests.
 
 **Technologies / tags**
-AssemblyAI, Voice Agent API, Twilio, Telephony, Speech-to-Text, Voice AI, Real-time, WebSocket, Tool Calling, JavaScript, Node.js, Web Audio API, Education, EdTech, Career
+AssemblyAI, Voice Agent API, Speech-to-Text, Voice AI, Real-time, WebSocket, Tool Calling, JavaScript, Node.js, Web Audio API, Education, EdTech, Career
 
 **Category**
 Education / Productivity

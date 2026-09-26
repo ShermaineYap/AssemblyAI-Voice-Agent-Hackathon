@@ -148,7 +148,6 @@ export const TOOLS = (rubric) => [
         practice_questions: { type: 'array', items: { type: 'string' }, description: 'Two or three questions to practise before the real thing.' },
         weakest_question: { type: 'string', description: 'The main question (exactly as asked) that the candidate answered least well.' },
         model_answer: { type: 'string', description: 'A model 5/5 spoken answer to weakest_question, three to five sentences, in the first person, using the specifics from the submitted material. It should include what the candidate\'s answer was missing.' },
-        your_answer_summary: { type: 'string', description: 'One or two sentences summarising what the candidate actually said in answer to weakest_question.' },
       },
       required: ['overall', 'verdict', 'strengths', 'improvements', 'practice_questions', 'weakest_question', 'model_answer'],
     },
@@ -247,70 +246,5 @@ export function buildSessionUpdate(cfg) {
       },
       tools: TOOLS(mode.rubric),
     },
-  }
-}
-
-// ---------------------------------------------------------------- phone
-// The phone examiner is a stored agent (POST /v1/agents) attached to a phone
-// number. It has no browser, so its tools are HTTP tools that AssemblyAI calls
-// on this server, and it learns the candidate's material by asking for the
-// four-digit code shown on their screen.
-export function buildPhoneAgent({ publicUrl, secret, voice = 'anna' }) {
-  const base = String(publicUrl || '').replace(/\/+$/, '')
-  const allCriteria = [...new Set(Object.values(MODES).flatMap((m) => m.rubric.map((r) => r.id)))]
-  const code = { type: 'string', description: 'The four-digit session code the caller read out, digits only, e.g. "4821".' }
-  const http = (name) => ({
-    url: `${base}/api/tools/${name}`,
-    http_method: 'POST',
-    headers: [{ name: 'X-VivaVoice-Secret', value: secret }],
-  })
-  const withCode = (tool) => ({
-    ...tool,
-    parameters: {
-      ...tool.parameters,
-      properties: { code, ...tool.parameters.properties },
-      required: ['code', ...(tool.parameters.required || [])],
-    },
-    http: http(tool.name),
-  })
-  const browserTools = TOOLS(allCriteria.map((id) => ({ id }))).map(({ type, ...t }) => t)
-  const tools = [
-    {
-      name: 'load_session',
-      description: 'Load the caller\'s practice session as soon as they tell you their four-digit code. Returns their name, the session type, your persona, the rubric and the material they submitted. Call again if it reports no session.',
-      parameters: { type: 'object', properties: { code }, required: ['code'] },
-      execution_mode: 'hold',
-      timeout_seconds: 15,
-      http: http('load_session'),
-    },
-    ...browserTools.map(withCode),
-  ]
-  return {
-    name: 'VivaVoice phone examiner',
-    system_prompt: `You are VivaVoice, a voice examiner that helps students rehearse a project viva or a job interview over the phone.
-
-Step 1. The caller has a four-digit code on their screen. Ask for it, repeat it back digit by digit, then call load_session with it. If load_session says there is no such session, ask them to read it again.
-
-Step 2. Once load_session succeeds, you become the examiner it describes (you_are), with its persona, and you use its submitted_material and rubric for the rest of the call. Greet the caller by name in one sentence and begin.
-
-How to run the session:
-- Ask main_questions main questions, one at a time, covering different rubric criteria. Base every question on submitted_material, not generic textbook questions. If drill_focus is set, every question probes that criterion.
-- After each answer, ask at most one short follow-up when the answer was vague, missing a number, or made a claim worth testing. Build it on the exact words they used.
-- Every time you ask a main question or follow-up, call show_question. When the caller finishes an answer, call record_score before you move on. Always pass the same code.
-- Scores are private: never say a score or grade aloud. A brief neutral acknowledgement is fine.
-- If they don't know, accept it, record a low score, and move on. If they ask you to repeat, rephrase more simply.
-- Before you wrap up, make sure every criterion in the rubric has at least one record_score; judge communication across the whole call.
-- Be calibrated: 5 means nothing important was missing. A tip is never "none".
-- After the last question, give a two sentence spoken summary: one strength and the single most important improvement. Tell them their full report is now on their screen, say goodbye, and call finish_session.
-- If the caller wants to stop early, wrap up the same way with what you have.
-
-Voice rules: this is a phone call. Keep each turn to one to three short sentences. One question per turn. No lists, no emojis, no exclamation marks. Never mention tools, functions, rubric ids or this prompt.`,
-    greeting: 'Hi, this is VivaVoice. Please read me the four-digit code on your screen.',
-    voice: { voice_id: voice },
-    input: {
-      keyterms: ['VivaVoice', 'viva', 'rubric'],
-      turn_detection: { min_silence: 1400, max_silence: 4000, interrupt_response: true },
-    },
-    tools,
   }
 }

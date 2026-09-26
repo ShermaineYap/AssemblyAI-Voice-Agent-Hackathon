@@ -9,10 +9,6 @@ services:
     envVars:
       - key: ASSEMBLYAI_API_KEY
         sync: false
-      - key: PHONE_TOOL_SECRET   # optional: enables phone-in (npm run phone prints one)
-        sync: false
-      - key: PHONE_NUMBER        # optional: the number shown on the phone-in screen
-        sync: false
       - key: TRUST_PROXY
         value: "1"
       - key: TOKENS_PER_HOUR
