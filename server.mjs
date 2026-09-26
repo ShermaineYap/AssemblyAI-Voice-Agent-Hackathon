@@ -64,7 +64,8 @@ const TYPES = {
 
 // Resolves a URL path inside ./public, refusing anything that escapes it.
 export function resolveStatic(urlPath) {
-  const clean = decodeURIComponent(urlPath.split('?')[0])
+  let clean
+  try { clean = decodeURIComponent(urlPath.split('?')[0]) } catch { return null }
   const rel = normalize(clean === '/' ? '/index.html' : clean).replace(/^([/\\])+/, '')
   const full = join(PUBLIC, rel)
   if (!full.startsWith(PUBLIC)) return null
@@ -78,7 +79,7 @@ async function mintToken() {
   url.searchParams.set('product', 'voice_agent')
   url.searchParams.set('expires_in_seconds', '60')
   // A viva runs ~10 minutes; cap sessions at 20 so a forgotten tab stops billing.
-  url.searchParams.set('max_session_duration_seconds', process.env.MAX_SESSION_SECONDS || '1200')
+  url.searchParams.set('max_session_duration_seconds', process.env.MAX_SESSION_SECONDS || '1800')
   const res = await fetch(url, {
     headers: { Authorization: `Bearer ${process.env.ASSEMBLYAI_API_KEY}` },
   })
@@ -100,21 +101,33 @@ function send(res, status, body, type = 'application/json') {
 
 export function createServer({ limiter = createLimiter({ limit: Number(process.env.TOKENS_PER_HOUR) || 20 }), tokenFn = mintToken } = {}) {
   return http.createServer(async (req, res) => {
+    try { await route(req, res) } catch (error) {
+      console.error(error)
+      if (!res.headersSent) send(res, 500, { error: 'server error' })
+    }
+  })
+  async function route(req, res) {
     const path = (req.url || '/').split('?')[0]
 
     if (path === '/health') return send(res, 200, { ok: true, key: Boolean(process.env.ASSEMBLYAI_API_KEY) })
 
     // Lets a regional deployment (or the test suite) point the browser at another socket.
-    if (path === '/config') return send(res, 200, { wsUrl: process.env.AGENTS_WS_URL || 'wss://agents.assemblyai.com/v1/ws' })
+    if (path === '/config') return send(res, 200, { wsUrl: process.env.AGENTS_WS_URL || 'wss://agents.assemblyai.com/v1/ws', maxSessionSeconds: Number(process.env.MAX_SESSION_SECONDS) || 1800 })
 
     if (path === '/token') {
       if (req.method !== 'GET') return send(res, 405, { error: 'GET only' })
-      const ip = (req.headers['x-forwarded-for'] || '').split(',')[0].trim() || req.socket.remoteAddress
+      // Behind a proxy (Render sets TRUST_PROXY in render.yaml) the client IP is
+      // the last hop the proxy appended; otherwise the header is untrusted.
+      const xff = String(req.headers['x-forwarded-for'] || '').split(',').map((s) => s.trim()).filter(Boolean)
+      const ip = (process.env.TRUST_PROXY && xff.at(-1)) || req.socket.remoteAddress
       if (!limiter(ip)) return send(res, 429, { error: 'Too many sessions from this address. Try again later.' })
       // Same-origin check: a token is money, so other sites can't mint them.
       const origin = req.headers.origin
       const allowed = process.env.PUBLIC_ORIGIN
-      if (allowed && origin && origin !== allowed) return send(res, 403, { error: 'origin not allowed' })
+      // Browsers send Origin on cross-site fetches and Sec-Fetch-Site on all; a
+      // token request from another site, or from a script with no browser headers, is refused.
+      const site = req.headers['sec-fetch-site']
+      if (allowed && ((origin && origin !== allowed) || (!origin && site && site !== 'same-origin' && site !== 'none'))) return send(res, 403, { error: 'origin not allowed' })
       try {
         return send(res, 200, { token: await tokenFn() })
       } catch (error) {
@@ -138,7 +151,7 @@ export function createServer({ limiter = createLimiter({ limit: Number(process.e
     } catch {
       send(res, 404, 'not found', 'text/plain')
     }
-  })
+  }
 }
 
 // --- main ------------------------------------------------------------------

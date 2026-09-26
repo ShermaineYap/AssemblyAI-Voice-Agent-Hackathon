@@ -9,7 +9,9 @@ services:
     envVars:
       - key: ASSEMBLYAI_API_KEY
         sync: false
+      - key: TRUST_PROXY
+        value: "1"
       - key: TOKENS_PER_HOUR
         value: "20"
       - key: MAX_SESSION_SECONDS
-        value: "1200"
+        value: "1800"

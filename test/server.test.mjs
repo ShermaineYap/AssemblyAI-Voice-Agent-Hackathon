@@ -55,3 +55,18 @@ test('limiter window expires', () => {
   t = 1500
   assert.equal(lim('a'), true)
 })
+
+test('malformed percent-encoding is a 404, not a crash', async () => {
+  await withServer({ tokenFn: async () => 't' }, async (base) => {
+    assert.equal((await fetch(base + '/%')).status, 404)
+    assert.equal((await fetch(base + '/%zz')).status, 404)
+    assert.equal((await fetch(base + '/health')).status, 200)
+  })
+})
+
+test('x-forwarded-for is ignored unless TRUST_PROXY is set', async () => {
+  await withServer({ tokenFn: async () => 't', limiter: createLimiter({ limit: 1 }) }, async (base) => {
+    assert.equal((await fetch(base + '/token', { headers: { 'x-forwarded-for': '1.1.1.1' } })).status, 200)
+    assert.equal((await fetch(base + '/token', { headers: { 'x-forwarded-for': '2.2.2.2' } })).status, 429)
+  })
+})
