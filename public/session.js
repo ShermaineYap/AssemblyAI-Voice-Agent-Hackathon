@@ -109,6 +109,7 @@ export const TOOLS = (rubric) => [
     },
     execution_mode: 'interactive',
     timeout_seconds: 10,
+    response_instructions: { success: 'Say nothing about this; just ask the question naturally.' },
   },
   {
     type: 'function',
@@ -127,6 +128,10 @@ export const TOOLS = (rubric) => [
     },
     execution_mode: 'interactive',
     timeout_seconds: 10,
+    response_instructions: {
+      success: 'Never mention the score or that anything was recorded. Continue the viva.',
+      error: 'Silently call record_score again with valid values; say nothing about it to the candidate.',
+    },
   },
   {
     type: 'function',
@@ -200,10 +205,24 @@ export function buildGreeting(cfg) {
 
 // Turn detection. "Thinking time" gives candidates longer pauses before the
 // examiner jumps in, which matters when you're composing an answer aloud.
+// Without thinking time, silence thresholds are left unset so AssemblyAI's
+// adaptive endpointing stays on (setting either one disables it).
 export function turnDetection(thinkingTime) {
   return thinkingTime
     ? { min_silence: 1600, max_silence: 4500, interrupt_response: true }
-    : { min_silence: 800, max_silence: 2500, interrupt_response: true }
+    : { interrupt_response: true }
+}
+
+// A plain description of the audio for the speech-to-text model (context, not
+// instructions), distinct from the LLM's system prompt. Max 1750 characters.
+export function buildTranscriptionPrompt(cfg) {
+  const kind = cfg.mode === 'interview'
+    ? `A spoken job interview for the role of ${cfg.subject || 'a graduate position'}.`
+    : `A spoken university viva (oral project defence) about a final-year project titled "${cfg.subject || 'untitled'}".`
+  const who = ' An examiner asks questions and the candidate answers in English, often with technical vocabulary, numbers and model names.'
+  const ctx = (cfg.context || '').replace(/\s+/g, ' ').trim()
+  const room = 1750 - kind.length - who.length - 40
+  return `${kind}${who}${ctx ? ` The project summary: ${ctx.slice(0, Math.max(0, room)).replace(/\s\S*$/, '')}` : ''}`.slice(0, 1750)
 }
 
 export function buildSessionUpdate(cfg) {
@@ -216,6 +235,9 @@ export function buildSessionUpdate(cfg) {
       input: {
         format: { encoding: 'audio/pcm' },
         keyterms: extractKeyterms(cfg.subject, cfg.context, cfg.name),
+        transcription_prompt: buildTranscriptionPrompt(cfg),
+        // Viva answers are long: steady partials keep the live caption moving.
+        continuous_partials: true,
         turn_detection: turnDetection(cfg.thinkingTime),
       },
       output: {

@@ -149,7 +149,9 @@ export async function openAudio({ deviceId, onChunk, onMicLevel, onSpeakerLevel,
       // Keeps the examiner's voice out of the mic so it doesn't interrupt itself.
       echoCancellation: true,
       noiseSuppression: false,
-      autoGainControl: false,
+      // AssemblyAI's guidance: echo cancellation + AGC on, browser noise
+      // suppression off (the API runs its own voice focus server-side).
+      autoGainControl: true,
     },
   })
   const capture = await worklet(capCtx, CAPTURE, 'vv-capture')

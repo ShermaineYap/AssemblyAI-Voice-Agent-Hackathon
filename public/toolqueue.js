@@ -24,11 +24,12 @@ export class ToolResultQueue {
     }
   }
 
-  add(callId, result) {
+  add(callId, result, isError = false) {
     this.pending.push({
       type: 'tool.result',
       call_id: callId,
       result: typeof result === 'string' ? result : JSON.stringify(result),
+      ...(isError ? { is_error: true } : {}),
     })
     this.flush()
   }

@@ -50,9 +50,10 @@ test('keyterms are capped at 100', () => {
   assert.equal(extractKeyterms(text).length, 100)
 })
 
-test('thinking time loosens turn detection', () => {
-  assert.ok(turnDetection(true).max_silence > turnDetection(false).max_silence)
-  assert.ok(turnDetection(true).min_silence > turnDetection(false).min_silence)
+test('thinking time sets long silence thresholds within API limits', () => {
+  const t = turnDetection(true)
+  assert.ok(t.min_silence >= 50 && t.max_silence <= 10000 && t.min_silence < t.max_silence)
+  assert.ok(t.max_silence > 3000, 'longer than the API default')
 })
 
 test('keyterms include repeated lowercase domain phrases and the glossary', () => {
@@ -67,4 +68,19 @@ test('prompt asks for every criterion and calibrated scores', () => {
   const p = buildSessionUpdate({ mode: 'viva', context: 'x' }).session.system_prompt
   assert.match(p, /every rubric criterion/)
   assert.match(p, /never "none"/)
+})
+
+test('transcription prompt describes the audio and stays under 1750 chars', async () => {
+  const { buildTranscriptionPrompt } = await import('../public/session.js')
+  const p = buildTranscriptionPrompt({ mode: 'viva', subject: 'LeafLens', context: 'x '.repeat(3000) })
+  assert.ok(p.length <= 1750)
+  assert.match(p, /viva/)
+  const s = buildSessionUpdate({ mode: 'viva', subject: 'LeafLens', context: SAMPLES.viva.context }).session
+  assert.equal(s.input.continuous_partials, true)
+  assert.ok(s.input.transcription_prompt.includes('LeafLens'))
+})
+
+test('fast turns keep adaptive endpointing (no silence thresholds)', () => {
+  const t = turnDetection(false)
+  assert.ok(!('min_silence' in t) && !('max_silence' in t))
 })

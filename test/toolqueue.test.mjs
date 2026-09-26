@@ -37,3 +37,11 @@ test('does not send once the user starts talking again', () => {
   q.add('c4', {})
   assert.equal(sent.length, 0)
 })
+
+test('error results carry is_error', () => {
+  const sent = []
+  const q = new ToolResultQueue((m) => sent.push(m))
+  q.onEvent({ type: 'reply.done' })
+  q.add('c5', { error: 'bad' }, true)
+  assert.equal(sent[0].is_error, true)
+})
