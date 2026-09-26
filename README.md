@@ -36,6 +36,7 @@ VivaVoice gives you unlimited spoken practice on **your own material**:
 | **Rambling alarm** | If one answer runs past 90 s, the examiner cuts in and asks for your main point, like a real panel. (`?ramble=30` on the URL shortens it for demos.) |
 | **Model answer** | The report shows your weakest question with what you said next to a 5/5 answer built from your own material. |
 | **Progress** | Every report is kept in your browser: score, fillers and thinking time trend across sessions, plus your most common weak area. |
+| **Phone-in practice** | Prefer to rehearse on your phone? Get a four-digit code, call the VivaVoice number and read it out. The examiner loads your report and the rubric fills in live on your laptop while you talk. |
 | **Drill mode** | One button on the report starts a session that targets only your weakest criterion. |
 | **Report** | Overall mark, verdict, strengths, prioritised improvements, rubric table, delivery stats, practice questions and full transcript. Export as Markdown or print to PDF. |
 
@@ -81,8 +82,46 @@ sequenceDiagram
 | `input.speech.started` / `stopped` | Barge-in (flush playback), plus speaking-time and thinking-time metrics |
 | Temporary tokens | Browser never sees the API key; the server rate-limits token minting per IP |
 | `session.end` | Sent explicitly so the session isn't left open and billing |
+| Stored agents, HTTP tools, phone numbers | The phone examiner is published with `POST /v1/agents`, its tools are HTTP tools that AssemblyAI calls on the server during the call, and `/v1/phone-numbers` binds it to a Twilio SIP number |
 | `session.resume` | If the socket drops without `session.ended`, the app reconnects with a fresh token and resumes the same session inside AssemblyAI's 30 s window, so a Wi-Fi blip doesn't lose the viva |
 | `max_session_duration_seconds` | Capped at 30 min; since the API gives no warning, the examiner is asked to wrap up a minute before the cap |
+
+## Phone-in practice
+
+The browser examiner answers its tools in the page. On a phone call there is no page, so the phone examiner is a **stored agent** whose tools are **HTTP tools** that AssemblyAI calls on this server during the call:
+
+```mermaid
+sequenceDiagram
+    participant P as Student's phone
+    participant T as Twilio SIP trunk
+    participant A as AssemblyAI (stored agent)
+    participant S as VivaVoice server
+    participant B as Student's browser
+    B->>S: POST /api/phone/session (report, mode, persona)
+    S-->>B: code 4821 (+ private viewer key)
+    P->>T: call the number
+    T->>A: sip:sip.assemblyai.com
+    A-->>P: "Please read me your code"
+    A->>S: load_session {code} (HTTP tool, shared secret)
+    S-->>A: name, persona, rubric, submitted material
+    loop each answer
+        A->>S: show_question / record_score
+        B->>S: poll /api/phone/session/4821
+        S-->>B: questions + scores → live rubric
+    end
+    A->>S: finish_session → report on the laptop
+```
+
+Setup (after deploying, since AssemblyAI needs a public https URL to call):
+
+```bash
+# .env: ASSEMBLYAI_API_KEY, PUBLIC_URL, TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN,
+#       TWILIO_PHONE_NUMBER, TWILIO_TRUNK_DOMAIN (see .env.example)
+npm run phone              # publishes the phone examiner and attaches it to your number
+npm run phone -- --agent   # or: only publish the agent, attach a number in the AssemblyAI dashboard
+```
+
+Then set `PHONE_TOOL_SECRET` and `PHONE_NUMBER` on the deployed server. The **Practise by phone** button appears on the setup page only when both are set. Codes expire after 3 hours, and the tool endpoints reject calls without the shared secret.
 
 ## Run it locally
 
@@ -131,6 +170,8 @@ public/
   samples.js          one-click sample viva and interview
   pdftext.js          pdf.js extraction and section picking (abstract, methods, results…)
   history.js          progress across sessions, kept in localStorage
+phone.mjs             phone-in session store and the HTTP tools AssemblyAI calls during a call
+scripts/phone.mjs     publishes the phone examiner (stored agent) and wires a Twilio number to it
   vendor/pdfjs/       pdf.js 6.3 (Apache-2.0), unmodified
 test/                 node:test unit + server tests
 ```
@@ -138,7 +179,6 @@ test/                 node:test unit + server tests
 ## Roadmap
 
 - Panel mode: two examiner voices taking turns
-- Phone-in practice via Twilio SIP for students without a good laptop mic
 - Bahasa Melayu and Mandarin examiner modes
 
 ## License
