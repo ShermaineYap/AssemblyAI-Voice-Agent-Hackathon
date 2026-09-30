@@ -99,13 +99,19 @@ function send(res, status, body, type = 'application/json') {
   res.end(typeof body === 'string' ? body : JSON.stringify(body))
 }
 
-export function createServer({ limiter = createLimiter({ limit: Number(process.env.TOKENS_PER_HOUR) || 20 }), tokenFn = mintToken } = {}) {
-  return http.createServer(async (req, res) => {
+export function createServer(opts) {
+  return http.createServer(createHandler(opts))
+}
+
+// The request handler on its own, so serverless hosts (api/index.mjs on
+// Vercel) can run the same routes without a long-lived server.
+export function createHandler({ limiter = createLimiter({ limit: Number(process.env.TOKENS_PER_HOUR) || 20 }), tokenFn = mintToken } = {}) {
+  return async (req, res) => {
     try { await route(req, res) } catch (error) {
       console.error(error)
       if (!res.headersSent) send(res, 500, { error: 'server error' })
     }
-  })
+  }
   async function route(req, res) {
     const path = (req.url || '/').split('?')[0]
 
@@ -119,7 +125,7 @@ export function createServer({ limiter = createLimiter({ limit: Number(process.e
       // Behind a proxy (Render sets TRUST_PROXY in render.yaml) the client IP is
       // the last hop the proxy appended; otherwise the header is untrusted.
       const xff = String(req.headers['x-forwarded-for'] || '').split(',').map((s) => s.trim()).filter(Boolean)
-      const ip = (process.env.TRUST_PROXY && xff.at(-1)) || req.socket.remoteAddress
+      const ip = (process.env.TRUST_PROXY && xff.at(-1)) || req.socket?.remoteAddress || 'unknown'
       if (!limiter(ip)) return send(res, 429, { error: 'Too many sessions from this address. Try again later.' })
       // Same-origin check: a token is money, so other sites can't mint them.
       const origin = req.headers.origin
