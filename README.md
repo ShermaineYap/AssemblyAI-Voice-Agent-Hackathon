@@ -8,6 +8,8 @@ Built for the [AssemblyAI Voice Agent Hackathon](https://lablab.ai/ai-hackathons
 
 ![VivaVoice](docs/cover.png)
 
+**🔴 Try it live: [vivavoice-five.vercel.app](https://vivavoice-five.vercel.app)** (click *✦ Try a sample*, then *Start the viva*; allow the microphone)
+
 **▶ [Watch the 4-minute demo video](docs/VivaVoice-demo.mp4)**: a real session with the AssemblyAI examiner, from PDF upload to the final report.
 
 ---
