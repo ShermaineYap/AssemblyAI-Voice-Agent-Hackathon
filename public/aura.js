@@ -106,10 +106,15 @@ export function createAura(canvas) {
 
   const reduced = matchMedia('(prefers-reduced-motion: reduce)').matches
   const t0 = performance.now()
-  function frame() {
+  // Render at ~30 fps and 1x resolution: the orb looks the same, and it leaves
+  // the CPU/GPU free for audio (and for screen recording).
+  let last = 0
+  function frame(now) {
     requestAnimationFrame(frame)
+    if (now - last < 32) return
+    last = now
     if (!canvas.isConnected || canvas.offsetParent === null) return
-    const dpr = Math.min(2, devicePixelRatio || 1)
+    const dpr = 1
     const w = Math.round(canvas.clientWidth * dpr), h = Math.round(canvas.clientHeight * dpr)
     if (canvas.width !== w || canvas.height !== h) { canvas.width = w; canvas.height = h }
     const k = 0.12
