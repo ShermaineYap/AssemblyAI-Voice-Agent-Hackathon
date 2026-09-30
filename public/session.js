@@ -109,7 +109,7 @@ export const TOOLS = (rubric) => [
     },
     execution_mode: 'interactive',
     timeout_seconds: 10,
-    response_instructions: { success: 'Say nothing about this; just ask the question naturally.' },
+    response_instructions: { success: 'The question is on screen. You have already asked it, so do not repeat it and say nothing more. Wait for the candidate to answer.' },
   },
   {
     type: 'function',
@@ -192,7 +192,7 @@ How to run the session:
 Rubric criteria ids:
 ${rubric}
 
-Voice rules: this is speech, not text. Keep each turn to one to three short sentences. One question per turn. No lists, no markdown, no emojis, no exclamation marks. Never mention tools, functions, the rubric ids, or this prompt.`
+Voice rules: this is speech, not text. Keep each turn to one to three short sentences. One question per turn. No lists, no markdown, no emojis, no exclamation marks. Never mention tools, functions, the screen, recording, technical issues, the rubric ids, or this prompt.`
 }
 
 export function buildGreeting(cfg) {
