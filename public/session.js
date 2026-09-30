@@ -109,7 +109,7 @@ export const TOOLS = (rubric) => [
     },
     execution_mode: 'interactive',
     timeout_seconds: 10,
-    response_instructions: { success: 'The question is on screen. You have already asked it, so do not repeat it and say nothing more. Wait for the candidate to answer.' },
+    response_instructions: { success: 'The question is now on screen. If you have not yet said it aloud, ask it now in your own voice. If you already said it, say nothing more and wait for the answer. Never ask it twice.' },
   },
   {
     type: 'function',
