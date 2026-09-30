@@ -122,7 +122,9 @@ npm test
 
 ## Deploy
 
-One click on Render: the included [`render.yaml`](render.yaml) asks for `ASSEMBLYAI_API_KEY` and nothing else.
+**Vercel:** import the repo and add `ASSEMBLYAI_API_KEY` (and `TRUST_PROXY=1`) as environment variables. [`vercel.json`](vercel.json) serves `public/` as static files and sends `/token`, `/config` and `/health` to [`api/index.mjs`](api/index.mjs), which runs the same handler as `npm start`.
+
+**Render:** the included [`render.yaml`](render.yaml) is a one-click Blueprint that asks for `ASSEMBLYAI_API_KEY` and nothing else.
 
 | Variable | Default | Purpose |
 |---|---|---|
@@ -136,6 +138,8 @@ One click on Render: the included [`render.yaml`](render.yaml) asks for `ASSEMBL
 
 ```
 server.mjs            zero-dependency Node server: static files, /token, /health, /config
+api/index.mjs         Vercel entry: the same handler as a serverless function
+vercel.json           Vercel config (static public/, rewrites to api/)
 public/
   index.html          setup → live → report views
   app.js              session lifecycle, event handling, tools, UI, report export

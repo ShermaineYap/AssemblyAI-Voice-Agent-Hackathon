@@ -34,7 +34,7 @@ The whole app runs on one AssemblyAI Voice Agent API WebSocket. Each session is 
 - Barge-in stops playback mid-word.
 - Tool results follow the API's reply.done timing rules and are dropped for interrupted replies.
 
-It also sends a plain-language transcription_prompt describing the session, keeps continuous partials on for long answers, resumes the session automatically after a network drop, and wraps up before the session cap. A zero-dependency Node server mints short-lived tokens with per-IP rate limiting, so the API key never reaches the browser. The code is MIT licensed and has 42 automated tests.
+It also sends a plain-language transcription_prompt describing the session, keeps continuous partials on for long answers, resumes the session automatically after a network drop, and wraps up before the session cap. A zero-dependency Node server mints short-lived tokens with per-IP rate limiting, so the API key never reaches the browser. The code is MIT licensed and has 43 automated tests.
 
 **Technologies / tags**
 AssemblyAI, Voice Agent API, Speech-to-Text, Voice AI, Real-time, WebSocket, Tool Calling, JavaScript, Node.js, Web Audio API, Education, EdTech, Career
