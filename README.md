@@ -8,6 +8,8 @@ Built for the [AssemblyAI Voice Agent Hackathon](https://lablab.ai/ai-hackathons
 
 ![VivaVoice](docs/cover.png)
 
+**▶ [Watch the 4-minute demo video](docs/VivaVoice-demo.mp4)**: a real session with the AssemblyAI examiner, from PDF upload to the final report.
+
 ---
 
 ## Why
@@ -39,9 +41,24 @@ VivaVoice gives you unlimited spoken practice on **your own material**:
 | **Drill mode** | One button on the report starts a session that targets only your weakest criterion. |
 | **Report** | Overall mark, verdict, strengths, prioritised improvements, rubric table, delivery stats, practice questions and full transcript. Export as Markdown or print to PDF. |
 
-| Live session | Report |
+## Screenshots
+
+These are from a real session with the AssemblyAI Voice Agent on the sample project (LeafLens, tomato leaf disease detection).
+
+| 1. Start from your own report | 2. The examiner asks about *your* work |
 |---|---|
-| ![Live session](docs/screenshots/live.png) | ![Report](docs/screenshots/report.png) |
+| ![Setup: PDF upload, extracted keyterms and examiner settings](docs/screenshots/setup.png) | ![The question card, the voice aura and the live rubric](docs/screenshots/live-question.png) |
+| Drop in a PDF. The abstract, methods and results are extracted in the browser, and technical terms become AssemblyAI keyterms. | `show_question` puts each question on screen while the examiner speaks it. The rubric on the right fills as you answer. |
+
+| 3. Vague answer? It follows up | 4. It keeps you to time |
+|---|---|
+| ![A follow-up question built on the candidate's words, with examiner notes](docs/screenshots/live-follow-up.png) | ![The answer timer ring and delivery stats while the candidate talks](docs/screenshots/live-answer-timer.png) |
+| After a vague "um… it's probably the appearance", the examiner asks a follow-up built on those exact words. `record_score` adds private notes with evidence and a tip. | The ring shows how long the current answer has run. Ramble past the limit and the examiner cuts in. Pace, filler words and thinking time update live. |
+
+| 5. A scored report | 6. Your weakest answer, answered two ways |
+|---|---|
+| ![Report with overall mark, verdict and rubric radar chart](docs/screenshots/report-score.png) | ![What the candidate said next to a model 5/5 answer](docs/screenshots/report-model-answer.png) |
+| Overall mark, verdict, a radar chart of the rubric and what to fix for each criterion. | What you actually said, next to a 5/5 answer built from your own report. One click starts a drill on that weak area. |
 
 ## How it uses AssemblyAI
 
