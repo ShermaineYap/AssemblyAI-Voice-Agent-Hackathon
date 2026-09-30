@@ -879,10 +879,32 @@ function answerTo(question) {
     const score = hit / Math.max(1, Math.min(target.size, words.size))
     if (score > best) { best = score; i = idx }
   })
-  if (i < 0 || best < 0.4) return ''
-  const from = questionsAsked[i].at ?? 0
-  const to = questionsAsked[i + 1]?.at ?? transcript.length
-  return transcript.slice(from, to).filter((l) => l.who === 'you').map((l) => l.text).join(' ')
+  if (i >= 0 && best >= 0.4) {
+    const from = questionsAsked[i].at ?? 0
+    const to = questionsAsked[i + 1]?.at ?? transcript.length
+    return transcript.slice(from, to).filter((l) => l.who === 'you').map((l) => l.text).join(' ')
+  }
+  // The examiner sometimes asks without calling show_question, so fall back
+  // to the spoken transcript: find the question there and take the answer
+  // that follows, up to the examiner's next question.
+  let at = -1
+  best = 0
+  transcript.forEach((l, idx) => {
+    if (l.who !== 'examiner') return
+    const words = norm(l.text)
+    let hit = 0
+    for (const w of target) if (words.has(w)) hit++
+    const score = hit / Math.max(1, target.size)
+    if (score > best) { best = score; at = idx }
+  })
+  if (at < 0 || best < 0.5) return ''
+  const out = []
+  for (let k = at + 1; k < transcript.length; k++) {
+    const l = transcript[k]
+    if (l.who === 'examiner' && l.text.includes('?')) break
+    if (l.who === 'you') out.push(l.text)
+  }
+  return out.join(' ')
 }
 
 function showFocusNote(name) {
